@@ -980,6 +980,29 @@ def load_keypoints(filepath_pattern, format, recursive=True, path_sep='-',
     return coordinates,confidences,bodyparts
 
 
+def load_keypoints_AVATAR(keypoint_data_path, path_sep='_', path_in_name=True, remove_extension=True):
+    extensions = ['.csv']
+    filepaths = list_files_with_exts(
+        keypoint_data_path, extensions, recursive=True)
+    assert len(filepaths)>0, fill(
+        f'No files with extensions {extensions} found for {keypoint_data_path}')
+
+    bodyparts = ['nose','neck','anus','chest','rfoot','lfoot','rhand','lhand','tip']
+    coordinates = {}
+    for filepath in tqdm.tqdm(filepaths, desc=f'Loading keypoints'):
+        try:
+            name = _name_from_path(filepath, path_in_name, path_sep, remove_extension)
+            
+            df = pd.read_csv(filepath, header=None)
+            arr = df.to_numpy().reshape(len(df), len(bodyparts), 3) # Convert data to 3D numpy array
+            new_coordinates = {name: arr}
+            
+            coordinates.update(new_coordinates)
+        except Exception as e:
+            print(fill(f'Error loading {filepath}: {e}'))
+    return coordinates, bodyparts
+
+
 def _deeplabcut_loader(filepath, name):
     """Load tracking results from deeplabcut csv or hdf5 files."""
     ext = os.path.splitext(filepath)[1]
