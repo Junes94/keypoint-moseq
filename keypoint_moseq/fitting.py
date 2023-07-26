@@ -360,6 +360,10 @@ def apply_model(*, params, coordinates, confidences=None, num_iters=20,
             assert project_dir is not None and name is not None, fill(
                 'The `save_results` option requires either a `results_path` '
                 'or the `project_dir` and `name` arguments')
+            
+            results_folder_path = os.path.join(project_dir,name)
+            if not os.path.exists(results_folder_path):
+                os.makedirs(results_folder_path)
             results_path = os.path.join(project_dir,name,'results.h5')
      
     data, labels = format_data(coordinates, confidences=confidences, **kwargs)
