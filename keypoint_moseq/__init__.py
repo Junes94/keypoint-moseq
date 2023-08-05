@@ -34,15 +34,16 @@ from .viz import (
     generate_trajectory_plots,
 )
 
-from .analysis import (
-    compute_moseq_df, 
-    compute_stats_df, 
-    plotting_fingerprint,
-    create_fingerprint_dataframe, 
-    plot_syll_stats_with_sem,
-    get_group_trans_mats,
-    changepoint_analysis,
-)
+# from .analysis import (
+#     compute_moseq_df, 
+#     compute_stats_df, 
+#     plotting_fingerprint,
+#     create_fingerprint_dataframe, 
+#     plot_syll_stats_with_sem,
+#     get_group_trans_mats,
+#     changepoint_analysis,
+# )
+from .analysis import * #Junesu modify for after kp-modq analysis
 
 from jax_moseq.models.keypoint_slds import (
     fit_pca, 
