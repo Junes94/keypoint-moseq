@@ -276,6 +276,7 @@ def plot_syllable_frequencies(
     path=None,
     minlength=10,
     min_frequency=0.005,
+    syllable_viz=None
 ):
     """Plot a histogram showing the frequency of each syllable.
 
@@ -332,6 +333,8 @@ def plot_syllable_frequencies(
     ax.set_xlim(-1, xmax + 1)
     ax.set_title("Frequency distribution")
     ax.set_yticks([])
+    if syllable_viz is not None:
+        ax.axvline(syllable_viz, color="k", linestyle="--")
     return fig, ax
 
 
