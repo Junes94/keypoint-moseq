@@ -10,6 +10,9 @@ update_pypi.sh
 *.h5
 *.yml
 *.txt
+*.html
+*.png
+*.mp4
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
