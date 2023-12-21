@@ -69,6 +69,46 @@ def get_syllable_names(project_dir, model_name, syllable_ixs):
     return names
 
 
+def generate_index(project_dir, model_name, index_filepath):
+    """Generate index file as a csv.
+
+    Parameters
+    ----------
+    project_dir : str
+        path to project directory
+    model_name : str
+        model directory name
+    index_filepath : str
+        path to index file
+    """
+
+    # load model results
+    results_dict = load_results(project_dir, model_name)
+
+    # check if file exists
+    if os.path.exists(index_filepath):
+        index_df = pd.read_csv(index_filepath, index_col=False)
+
+        # all files are created
+        if len(index_df) == len(results_dict.keys()):
+            return
+        else:
+            # subset all the files
+            files = index_df.name.values
+            # find the missing file in results dict that's not in index
+            for i in results_dict.keys():
+                if i not in files:
+                    index_df.loc[len(index_df.index)] = [i, "default"]
+            # write index dataframe
+            index_df.to_csv(index_filepath, index=False)
+    else:
+        # generate a new index file
+        results_dict = load_results(project_dir, model_name)
+        index_df = pd.DataFrame({"name": list(results_dict.keys()), "group": "default"})
+        # write index dataframe
+        index_df.to_csv(index_filepath, index=False)
+
+
 def interactive_group_setting(project_dir, model_name):
     """Start the interactive group setting widget.
 
@@ -151,9 +191,7 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True):
             np.concatenate(
                 (
                     [0],
-                    np.sqrt(
-                        np.square(np.diff(v["centroid"], axis=0)).sum(axis=1)
-                    )
+                    np.sqrt(np.square(np.diff(v["centroid"], axis=0)).sum(axis=1))
                     * fps,
                 )
             )
@@ -161,7 +199,9 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True):
 
         if file_info is not None:
             # find the group for each recording from index data
-            s_group.append([file_info[k]["group"]] * n_frame)
+            s_group.append(
+                [index_data[index_data["name"] == k]["group"].values[0]] * n_frame
+            )
         else:
             # no index data
             s_group.append(["default"] * n_frame)
@@ -295,28 +335,59 @@ def compute_stats_df(
         ["heading", "angular_velocity", "velocity_px_s"]
     ].agg(["mean", "std", "min", "max"])
 
-    features.columns = [
-        "_".join(col).strip() for col in features.columns.values
-    ]
+    features.columns = ["_".join(col).strip() for col in features.columns.values]
     features.reset_index(inplace=True)
 
     # get durations
     trials = filtered_df["onset"].cumsum()
     trials.name = "trials"
-    durations = filtered_df.groupby(groupby + ["syllable"] + [trials])[
-        "onset"
-    ].count()
+    durations = filtered_df.groupby(groupby + ["syllable"] + [trials])["onset"].count()
     # average duration in seconds
     durations = durations.groupby(groupby + ["syllable"]).mean() / fps
     durations.name = "duration"
     # only keep the columns we need
-    durations = durations.fillna(0).reset_index()[
-        groupby + ["syllable", "duration"]
-    ]
+    durations = durations.fillna(0).reset_index()[groupby + ["syllable", "duration"]]
 
     stats_df = pd.merge(features, frequency_df, on=groupby + ["syllable"])
     stats_df = pd.merge(stats_df, durations, on=groupby + ["syllable"])
     return stats_df
+
+
+def generate_syll_info(project_dir, model_name, syll_info_path):
+    # parse model results
+    model_results = load_results(project_dir, model_name)
+    unique_sylls = np.unique(
+        np.concatenate([file["syllable"] for file in model_results.values()])
+    )
+    # construct the syllable dictionary
+    # in the non interactive version there won't be any group info
+    syll_info_df = pd.DataFrame(
+        {
+            "syllable": unique_sylls,
+            "label": [""] * len(unique_sylls),
+            "short_description": [""] * len(unique_sylls),
+        }
+    )
+
+    grid_movies = glob(os.path.join(project_dir, model_name, "grid_movies", "*.mp4"))
+    assert len(grid_movies) > 0, (
+        "No grid movies found. Please run `generate_grid_movies` as described in the docs: "
+        "https://keypoint-moseq.readthedocs.io/en/latest/modeling.html#visualization"
+    )
+    # make movie paths into a dataframe
+    movie_df = pd.DataFrame(
+        {
+            "syllable": [
+                int(os.path.splitext(os.path.basename(movie_path))[0][8:])
+                for movie_path in grid_movies
+            ],
+            "movie_path": grid_movies,
+        }
+    )
+
+    syll_info_df.merge(movie_df, on="syllable", how="outer").fillna("").to_csv(
+        syll_info_path, index=False
+    )
 
 
 def label_syllables(project_dir, model_name, moseq_df):
@@ -339,13 +410,8 @@ def label_syllables(project_dir, model_name, moseq_df):
         # generate the syllable info yaml file
         generate_syll_info(project_dir, model_name, syll_info_path)
 
-    # open syll_info
-    with open(syll_info_path, "r") as f:
-        syll_dict = yaml.safe_load(f)
-
-    grid_movies = glob(
-        os.path.join(project_dir, model_name, "grid_movies", "*.mp4")
-    )
+    # ensure there is grid movies
+    grid_movies = glob(os.path.join(project_dir, model_name, "grid_movies", "*.mp4"))
     assert len(grid_movies) > 0, (
         "No grid movies found. Please run `generate_grid_movies` as described in the docs: "
         "https://keypoint-moseq.readthedocs.io/en/latest/modeling.html#visualization"
@@ -362,35 +428,83 @@ def label_syllables(project_dir, model_name, moseq_df):
     # construct the index path
     index_path = os.path.join(project_dir, "index.yaml")
 
-    # create index.yaml if it does not exist
-    if not os.path.exists(index_path):
-        print("index.yaml does not exist, creating one...")
-        generate_index(project_dir, model_name, index_path)
+    # create the labeler dataframe
+    # only include the syllable that have grid movies
+    include = syll_info_df_with_movie.syllable.values
+    syll_df = moseq_df[["syllable"]].groupby("syllable").mean().reset_index().copy()
+    syll_df = syll_df[syll_df.syllable.isin(include)]
 
-    # compute group-wise stats dataframe
-    stats_df = compute_stats_df(
-        project_dir, model_name, moseq_df, groupby=["group"]
-    )[
-        [
-            "group",
-            "syllable",
-            "frequency",
-            "duration",
-            "heading_mean",
-            "velocity_px_s_mean",
-        ]
-    ]
+    # get labels and description from syll info
+    syll_df = syll_df.merge(
+        syll_info_df_with_movie[["syllable", "label", "short_description"]]
+    ).copy()
 
-    labeler = SyllableLabeler(
-        project_dir, model_name, stats_df, index_path, syll_info_path
+    # set up interactive table
+    titles = {
+        "syllable": "syllable",
+        "label": "label",
+        "short_description": "short description",
+    }
+    editors = {
+        "name": None,
+        "label": {
+            "type": "textarea",
+            "elementAttributes": {
+                "maxlength": "100",
+                "onkeydown": "if(event.keyCode == 13 && !event.shiftKey){this.blur();}",
+            },
+            "selectContents": True,
+            "verticalNavigation": "editor",
+            "shiftEnterSubmit": True,
+        },
+        "short description": {
+            "type": "textarea",
+            "elementAttributes": {"maxlength": "200"},
+            "selectContents": True,
+            "verticalNavigation": "editor",
+            "shiftEnterSubmit": True,
+        },
+    }
+
+    base_configuration = {"clipboard": "copy"}
+
+    widths = {"syllable": 100}
+    summary_table = pn.widgets.Tabulator(
+        syll_df,
+        titles=titles,
+        editors=editors,
+        layout="fit_data_table",
+        selectable=1,
+        show_index=False,
+        widths=widths,
+        configuration=base_configuration,
     )
 
-    output = widgets.interactive_output(
-        labeler.interactive_syllable_labeler,
-        {"syllables": labeler.syll_select},
-    )
+    button = pn.widgets.Button(name="Save syllable info", button_type="primary")
 
-    display(labeler.clear_button, labeler.syll_select, output)
+    # call back function to save the index file
+    def save_index(syll_df):
+        # create index file from csv
+        temp_df = syll_df.copy()
+        temp_df["label"] = temp_df["label"].str.strip()
+        temp_df["short_description"] = temp_df["short_description"].str.strip()
+        temp_df = temp_df.merge(
+            syll_info_df_with_movie[["syllable", "movie_path"]], on="syllable"
+        ).copy()
+        pd.concat([temp_df, syll_info_df_without_movie]).fillna("").to_csv(
+            syll_info_path, index=False
+        )
+
+    # button click action
+    def b(event, save=True):
+        save_index(syll_df)
+
+    button.on_click(b)
+
+    # bind everything together
+    return pn.Row(
+        pn.Column(select, ivideo), pn.Column(summary_table, pn.Column(button))
+    )
 
 
 def get_tie_correction(x, N_m):
@@ -544,9 +658,7 @@ def dunns_z_test_permute_within_group_pairs(
 
         n_mice = is_i.sum() + is_j.sum()
 
-        ranks_perm = real_ranks[(is_i | is_j)][
-            rnd.rand(n_perm, n_mice).argsort(-1)
-        ]
+        ranks_perm = real_ranks[(is_i | is_j)][rnd.rand(n_perm, n_mice).argsort(-1)]
         diff = np.abs(
             ranks_perm[:, : is_i.sum(), :].mean(1)
             - ranks_perm[:, is_i.sum() :, :].mean(1)
@@ -556,8 +668,7 @@ def dunns_z_test_permute_within_group_pairs(
         # also do for real data
         group_ranks = real_ranks[(is_i | is_j)]
         real_diff = np.abs(
-            group_ranks[: is_i.sum(), :].mean(0)
-            - group_ranks[is_i.sum() :, :].mean(0)
+            group_ranks[: is_i.sum(), :].mean(0) - group_ranks[is_i.sum() :, :].mean(0)
         )
 
         # add to dict
@@ -621,13 +732,9 @@ def compute_pvalues_for_group_pairs(
     def correct_p(x):
         return multipletests(x, alpha=thresh, method=mc_method)[1]
 
-    df_pval_corrected = df_pval.apply(
-        correct_p, axis=1, result_type="broadcast"
-    )
+    df_pval_corrected = df_pval.apply(correct_p, axis=1, result_type="broadcast")
 
-    return df_pval_corrected, (
-        (df_pval_corrected[df_k_real.is_sig] < thresh).sum(0)
-    )
+    return df_pval_corrected, ((df_pval_corrected[df_k_real.is_sig] < thresh).sum(0))
 
 
 def run_kruskal(
@@ -702,9 +809,7 @@ def run_kruskal(
     df_k_real = pd.DataFrame(
         [
             stats.kruskal(
-                *np.array_split(
-                    syllable_data[:, s_i], np.cumsum(n_per_group[:-1])
-                )
+                *np.array_split(syllable_data[:, s_i], np.cumsum(n_per_group[:-1]))
             )
             for s_i in range(N_s)
         ]
@@ -797,9 +902,7 @@ def sort_syllables_by_stat_difference(
     exp_df = mutation_df.loc[exp_group]
 
     # compute mean difference at each syll frequency and reorder based on difference
-    ordering = (
-        (exp_df[stat] - control_df[stat]).sort_values(ascending=False).index
-    )
+    ordering = (exp_df[stat] - control_df[stat]).sort_values(ascending=False).index
 
     return list(ordering)
 
@@ -822,20 +925,22 @@ def sort_syllables_by_stat(stats_df, stat="frequency"):
         the mapping from the syllable to the new plotting label
     """
 
-    tmp = (
-        stats_df.drop(
-            [
-                col
-                for col, dtype in stats_df.dtypes.items()
-                if dtype == "object"
-            ],
-            axis=1,
+    # stats_df frequency normalized by session
+    # mean frequency by syllable don't always refect the ordering from reindexing
+    # use the syllable label as ordering instead
+    if stat == "frequency":
+        ordering = sorted(stats_df.syllable.unique())
+    else:
+        ordering = (
+            stats_df.drop(
+                [col for col, dtype in stats_df.dtypes.items() if dtype == "object"],
+                axis=1,
+            )
+            .groupby("syllable")
+            .mean()
+            .sort_values(by=stat, ascending=False)
+            .index
         )
-        .groupby("syllable")
-        .mean()
-        .sort_values(by=stat, ascending=False)
-        .index
-    )
 
     # Get sorted ordering
     ordering = list(tmp)
@@ -1001,8 +1106,6 @@ def plot_syll_stats_with_sem(
         y=stat,
         hue=hue,
         order=ordering,
-        join=join,
-        dodge=True,
         errorbar=("ci", 68),
         ax=ax,
         hue_order=groups,
@@ -1029,7 +1132,6 @@ def plot_syll_stats_with_sem(
             [],
             color="red",
             marker="*",
-            linestyle="None",
             markersize=9,
             label="Significant Syllable",
         )
@@ -1186,9 +1288,7 @@ def get_transition_matrix(
             transitions = get_transitions(v)[0]
 
             trans_mat = (
-                n_gram_transition_matrix(
-                    transitions, n=2, max_label=max_syllable
-                )
+                n_gram_transition_matrix(transitions, n=2, max_label=max_syllable)
                 + smoothing
             )
 
@@ -1199,9 +1299,7 @@ def get_transition_matrix(
     return all_mats
 
 
-def get_group_trans_mats(
-    labels, label_group, group, syll_include, normalize="bigram"
-):
+def get_group_trans_mats(labels, label_group, group, syll_include, normalize="bigram"):
     """Get the transition matrices for each group.
 
     Parameters
@@ -1230,18 +1328,16 @@ def get_group_trans_mats(
     # Computing transition matrices for each given group
     for plt_group in group:
         # list of syll labels in recordings in the group
-        use_labels = [
-            lbl for lbl, grp in zip(labels, label_group) if grp == plt_group
-        ]
+        use_labels = [lbl for lbl, grp in zip(labels, label_group) if grp == plt_group]
         # find stack np array shape
         row_num = len(use_labels)
         max_len = max([len(lbl) for lbl in use_labels])
         # Get recordings to include in trans_mat
         # subset only syllable included
         trans_mats.append(
-            get_transition_matrix(
-                use_labels, normalize=normalize, combine=True
-            )[syll_include, :][:, syll_include]
+            get_transition_matrix(use_labels, normalize=normalize, combine=True)[
+                syll_include, :
+            ][:, syll_include]
         )
 
         # Getting frequency information for node scaling
@@ -1286,9 +1382,7 @@ def visualize_transition_bigram(
     # infer max_syllables
     max_syllables = trans_mats[0].shape[0]
 
-    fig, ax = plt.subplots(
-        1, len(group), figsize=figsize, sharex=False, sharey=True
-    )
+    fig, ax = plt.subplots(1, len(group), figsize=figsize, sharex=False, sharey=True)
     title_map = dict(bigram="Bigram", columns="Incoming", rows="Outgoing")
     color_lim = max([x.max() for x in trans_mats])
     if len(group) == 1:
@@ -1308,20 +1402,11 @@ def visualize_transition_bigram(
         cb.set_label(f"{title_map[normalize]} transition probability")
         axs[i].set_xlabel("Outgoing syllable")
         axs[i].set_title(g)
-        axs[i].set_xticks(
-            np.arange(len(syll_include)), syll_names, rotation=90
-        )
+        axs[i].set_xticks(np.arange(len(syll_include)), syll_names, rotation=90)
 
-    # saving the figures
-    # saving the figure
-    if save_dir is not None:
-        os.makedirs(save_dir, exist_ok=True)
-    else:
-        save_dir = os.path.join(project_dir, model_name, "figures")
-        os.makedirs(save_dir, exist_ok=True)
-
-    fig.savefig(os.path.join(save_dir, "transition_matrices.pdf"))
-    fig.savefig(os.path.join(save_dir, "transition_matrices.png"))
+    # save the figure
+    plot_name = "transition_matrices"
+    save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir)
 
 
 def generate_transition_matrices(
@@ -1362,9 +1447,7 @@ def generate_transition_matrices(
     results_dict = load_results(project_dir, model_name)
 
     # filter out syllables by freqency
-    model_labels = [
-        results_dict[recording]["syllable"] for recording in recordings
-    ]
+    model_labels = [results_dict[recording]["syllable"] for recording in recordings]
     frequencies = get_frequencies(model_labels)
     syll_include = np.where(frequencies > min_frequency)[0]
 
