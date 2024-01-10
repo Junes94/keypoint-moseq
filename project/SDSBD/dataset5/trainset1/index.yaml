@@ -13,19 +13,19 @@ files:
   name: pre106
 - group: susceptible
   name: pre107
-- group: susceptible_extreme
+- group: susceptible
   name: pre108
 - group: resilient
   name: pre109
 - group: control
   name: pre110
-- group: susceptible_extreme
+- group: susceptible
   name: pre111
 - group: resilient
   name: pre112
-- group: susceptible_extreme
+- group: susceptible
   name: pre113
-- group: susceptible_extreme
+- group: susceptible
   name: pre114
 - group: susceptible
   name: pre115
@@ -33,15 +33,15 @@ files:
   name: pre201
 - group: susceptible
   name: pre202
-- group: susceptible_extreme
+- group: susceptible
   name: pre203
 - group: resilient
   name: pre205
-- group: susceptible_extreme
+- group: susceptible
   name: pre212
 - group: control
   name: pre213
-- group: susceptible_extreme
+- group: susceptible
   name: pre214
 - group: toolowSIratio
   name: pre215
@@ -49,11 +49,11 @@ files:
   name: pre216
 - group: resilient
   name: pre217
-- group: susceptible_extreme
+- group: susceptible
   name: pre218
-- group: susceptible_extreme
+- group: susceptible
   name: pre219
-- group: susceptible_extreme
+- group: susceptible
   name: pre301
 - group: susceptible
   name: pre302
@@ -65,19 +65,19 @@ files:
   name: pre305
 - group: resilient
   name: pre306
-- group: susceptible_extreme
+- group: susceptible
   name: pre307
 - group: resilient
   name: pre308
 - group: susceptible
   name: pre309
-- group: susceptible_extreme
+- group: susceptible
   name: pre310
 - group: resilient
   name: pre311
 - group: susceptible
   name: pre312
-- group: susceptible_extreme
+- group: susceptible
   name: pre313
 - group: susceptible
   name: pre314
@@ -113,9 +113,9 @@ files:
   name: pre414
 - group: resilient
   name: pre415
-- group: susceptible_extreme
+- group: susceptible
   name: pre416
-- group: susceptible_extreme
+- group: susceptible
   name: pre417
 - group: susceptible
   name: pre418
