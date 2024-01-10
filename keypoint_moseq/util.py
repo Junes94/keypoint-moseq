@@ -2,7 +2,6 @@ import os
 import glob
 import tabulate
 import warnings
-import subprocess
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -235,18 +234,76 @@ def filter_angle(angles, size=9, axis=0, method="median"):
     return np.arctan2(filter(np.sin(angles)), filter(np.cos(angles)))
 
 
+def get_centroids_headings(
+    coordinates,
+    anterior_idxs,
+    posterior_idxs,
+    bodyparts=None,
+    use_bodyparts=None,
+    **kwargs,
+):
+    """Compute centroids and headings from keypoint coordinates.
+
+    Parameters
+    -------
+    coordinates: dict
+        Dictionary mapping recording names to keypoint coordinates as
+        ndarrays of shape (n_frames, n_bodyparts, [2 or 3]).
+
+    anterior_idxs: array-like of int
+        Indices of anterior bodyparts (after reindexing by `use_bodyparts`
+        when the latter is specified).
+
+    posterior_idxs: array-like of int
+        Indices of anterior bodyparts (after reindexing by `use_bodyparts`
+        when the latter is specified).
+
+    bodyparts: list of str, default=None
+        List of bodypart names in `coordinates`. Used to reindex coordinates
+        when `use_bodyparts` is specified.
+
+    use_bodyparts: list of str, default=None
+        Ordered list of bodyparts used to reindex `coordinates`.
+
+    Returns
+    -------
+    centroids: dict
+        Dictionary mapping recording names to centroid coordinates as ndarrays
+        of shape (n_frames, [2 or 3]).
+
+    headings: dict
+        Dictionary mapping recording names to heading angles (in radians) as 1d
+        arrays of shape (n_frames,).
+    """
+    if bodyparts is not None and use_bodyparts is not None:
+        coordinates = reindex_by_bodyparts(
+            coordinates, bodyparts, use_bodyparts
+        )
+
+    centroids, headings = {}, {}
+    for key, coords in coordinates.items():
+        coords = interpolate_keypoints(coords, np.isnan(coords).any(-1))
+        centroids[key] = np.median(coords, axis=1)
+        anterior_loc = coords[:, posterior_idxs].mean(1)
+        posterior_loc = coords[:, anterior_idxs].mean(1)
+        heading_vec = anterior_loc - posterior_loc
+        headings[key] = np.arctan2(*heading_vec.T[::-1]) + np.pi
+
+    return centroids, headings
+
+
 def filter_centroids_headings(centroids, headings, filter_size=9):
     """Perform median filtering on centroids and headings.
 
     Parameters
     -------
-    centroids: dict {str : ndarray, shape (t,2)}
+    centroids: dict
         Centroids stored as a dictionary mapping recording names to ndarrays,
-        where the first dim represents time
+        of shape (n_frames, [2 or 3]).
 
-    headings: dict {str : 1d array }
-        Headings stored as a dictionary mapping recording names to 1d arrays
-        representing an angle in radians
+    headings: dict
+        Dictionary mapping recording names to heading angles (in radians) as 1d
+        arrays of shape (n_frames,).
 
     filter_size: int, default=9
         Kernel size for median filtering
@@ -753,40 +810,6 @@ def permute_cyclic(arr, mask=None, axis=0):
     return arr_permuted
 
 
-def check_jupyter_extensions(
-    extensions=[
-        "nbextensions_configurator",
-        "jupyter_bokeh",
-        "qgrid",
-    ]
-):
-    result = subprocess.run(
-        ["jupyter", "nbextension", "list"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    result_str = result.stdout.decode("utf-8")
-
-    # For each extension
-    for extension in extensions:
-        for line in result_str.split("\n"):
-            if extension in line and "validating" not in line:
-                # Parse the line
-                parts = line.split()
-                # Check if the extension is enabled
-                if "enabled" in parts:
-                    print(
-                        f"✅ The extension {extension} is installed and enabled."
-                    )
-                else:
-                    print(
-                        f"❌ The extension {extension} is installed but not enabled."
-                    )
-                break
-        else:
-            print(f"The extension {extension} is not installed.")
-
-
 def _print_colored_table(row_labels, col_labels, values):
     try:
         from IPython.display import display
@@ -1070,7 +1093,7 @@ def get_typical_trajectories(
         the trajectory is based on the most exemplary syllable instances,
         rather than being average across all instances.
 
-    sampling_options: dict, default={'mode':'density', 'n_neighbors':50}
+    sampling_options: dict, default={'n_neighbors':50}
         Dictionary of options for sampling syllable instances (see
         :py:func:`keypoint_moseq.util.sample_instances`). Only used when
         `density_sample` is True.
@@ -1101,19 +1124,21 @@ def get_typical_trajectories(
     )
 
     if len(syllable_instances) == 0:
-        warnings.warn(
+        raise ValueError(
             fill(
                 "No syllables with sufficient instances to generate a trajectory. "
-                "This usually occurs when all frames have the same syllable label "
-                "(use `plot_syllable_frequencies` to check if this is the case)"
+                "This usually occurs when there is not enough inut data or when "
+                "all frames have the same syllable label (use "
+                "`plot_syllable_frequencies` to check if this is the case)"
             )
         )
         return
 
     if density_sample:
-        sampling_options['mode'] = 'density'
+        sampling_options["mode"] = "density"
         sampled_instances = sample_instances(
             syllable_instances,
+            sampling_options["n_neighbors"],
             coordinates=coordinates,
             centroids=centroids,
             headings=headings,

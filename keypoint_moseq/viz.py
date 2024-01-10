@@ -10,14 +10,20 @@ import plotly
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
 from vidio.read import OpenCVReader
-from scipy.spatial.distance import squareform
-from scipy.cluster.hierarchy import linkage, dendrogram
+from scipy.spatial.distance import squareform, pdist
+from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list
+
 from textwrap import fill
 from PIL import Image
 from keypoint_moseq.util import *
 from keypoint_moseq.io import load_results, _get_path
 from jax_moseq.models.keypoint_slds import center_embedding
 from jax_moseq.utils import get_durations, get_frequencies
+
+from plotly.subplots import make_subplots
+import plotly.io as pio
+
+pio.renderers.default = "iframe"
 
 # set matplotlib defaults
 plt.rcParams["figure.dpi"] = 100
@@ -60,11 +66,9 @@ def crop_image(image, centroid, crop_size):
 
     cropped = image[y_min:y_max, x_min:x_max]
     padded = np.zeros((h, w, *image.shape[2:]), dtype=image.dtype)
-    pad_x = (w - cropped.shape[1]) // 2
-    pad_y = (h - cropped.shape[0]) // 2
-    padded[
-        pad_y : pad_y + cropped.shape[0], pad_x : pad_x + cropped.shape[1]
-    ] = cropped
+    pad_x = max(w // 2 - x, 0)
+    pad_y = max(h // 2 - y, 0)
+    padded[pad_y : pad_y + cropped.shape[0], pad_x : pad_x + cropped.shape[1]] = cropped
     return padded
 
 
@@ -115,6 +119,7 @@ def plot_pcs(
     use_bodyparts,
     skeleton,
     keypoint_colormap="autumn",
+    keypoint_colors=None,
     savefig=True,
     project_dir=None,
     scale=1,
@@ -122,7 +127,7 @@ def plot_pcs(
     axis_size=(2, 1.5),
     ncols=5,
     node_size=30.0,
-    linewidth=2.0,
+    line_width=2.0,
     interactive=True,
     **kwargs,
 ):
@@ -148,6 +153,11 @@ def plot_pcs(
     keypoint_colormap : str
         Name of a matplotlib colormap to use for coloring the keypoints.
 
+    keypoint_colors : array-like, shape=(num_keypoints,3), default=None
+        Color for each keypoint. If None, `keypoint_colormap` is used. If the
+        dtype is int, the values are assumed to be in the range 0-255,
+        otherwise they are assumed to be in the range 0-1.
+
     savefig : bool, True
         Whether to save the figure to a file. If true, the figure is saved to
         `{project_dir}/pcs-{xy/xz/yz}.pdf` (`xz` and `yz` are only included
@@ -171,7 +181,7 @@ def plot_pcs(
     node_size : float, default=30.0
         Size of the keypoints in the figure.
 
-    linewidth: float, default=2.0
+    line_width: float, default=2.0
         Width of edges in skeleton
 
     interactive : bool, default=True
@@ -179,9 +189,13 @@ def plot_pcs(
     """
     k = len(use_bodyparts)
     d = len(pca.mean_) // (k - 1)
+
+    if keypoint_colors is None:
+        cmap = plt.cm.get_cmap(keypoint_colormap)
+        keypoint_colors = cmap(np.linspace(0, 1, k))
+
     Gamma = np.array(center_embedding(k))
     edges = get_edges(use_bodyparts, skeleton)
-    cmap = plt.colormaps[keypoint_colormap]
     plot_n_pcs = min(plot_n_pcs, pca.components_.shape[0])
 
     magnitude = np.sqrt((pca.mean_**2).mean()) * scale
@@ -205,28 +219,27 @@ def plot_pcs(
             for e in edges:
                 ax.plot(
                     *ymean[:, dims][e].T,
-                    color=cmap(e[0] / (k - 1)),
+                    color=keypoint_colors[e[0]],
                     zorder=0,
                     alpha=0.25,
-                    linewidth=linewidth,
+                    linewidth=line_width,
                 )
                 ax.plot(
                     *ypcs[i][:, dims][e].T,
                     color="k",
                     zorder=2,
-                    linewidth=linewidth + 0.2,
+                    linewidth=line_width + 0.2,
                 )
                 ax.plot(
                     *ypcs[i][:, dims][e].T,
-                    color=cmap(e[0] / (k - 1)),
+                    color=keypoint_colors[e[0]],
                     zorder=3,
-                    linewidth=linewidth,
+                    linewidth=line_width,
                 )
 
             ax.scatter(
                 *ymean[:, dims].T,
-                c=np.arange(k),
-                cmap=cmap,
+                c=keypoint_colors,
                 s=node_size,
                 zorder=1,
                 alpha=0.25,
@@ -234,8 +247,7 @@ def plot_pcs(
             )
             ax.scatter(
                 *ypcs[i][:, dims].T,
-                c=np.arange(k),
-                cmap=cmap,
+                c=keypoint_colors,
                 s=node_size,
                 zorder=4,
                 edgecolor="k",
@@ -262,10 +274,9 @@ def plot_pcs(
             ypcs,
             edges,
             keypoint_colormap,
-            savefig,
-            project_dir,
+            project_dir if savefig else None,
             node_size / 3,
-            linewidth * 2,
+            line_width * 2,
         )
 
 
@@ -322,9 +333,7 @@ def plot_syllable_frequencies(
     syllables = {k: res["syllable"] for k, res in results.items()}
     frequencies = get_frequencies(syllables)
     frequencies = frequencies[frequencies > min_frequency]
-    xmax = max(
-        minlength, np.max(np.nonzero(frequencies > min_frequency)[0]) + 1
-    )
+    xmax = max(minlength, np.max(np.nonzero(frequencies > min_frequency)[0]) + 1)
 
     fig, ax = plt.subplots()
     ax.bar(range(len(frequencies)), frequencies, width=1)
@@ -423,6 +432,72 @@ def plot_duration_distribution(
     return fig, ax
 
 
+def plot_kappa_scan(kappas, project_dir, prefix, figsize=(8, 2.5)):
+    """Plot the results of a kappa scan.
+
+    This function assumes that model results for each kappa value are stored
+    in `{project_dir}/{prefix}-{kappa}/checkpoint.h5`. Two plots are generated:
+    (1) a line plot showing the median syllable duration over the course of
+    fitting for each kappa value; (2) and a plot showing the final median
+    syllable duration as a function of kappa.
+
+    Parameters
+    ----------
+    kappas : array-like of float
+        Kapppa values used in the scan.
+
+    project_dir : str
+        Path to the project directory.
+
+    prefix : str
+        Prefix for the kappa scan model names.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure containing the plot.
+
+    final_median_durations : array of float
+        Median syllable durations for each kappa value, derived using the
+        final iteration of each model.
+    """
+    median_dur_histories = []
+    final_median_durs = []
+
+    for kappa in tqdm.tqdm(kappas, desc="Loading checkpoints"):
+        model_dir = f"{project_dir}/{prefix}-{kappa}"
+        with h5py.File(f"{model_dir}/checkpoint.h5", "r") as h5:
+            mask = h5["data/mask"][()]
+            iterations = np.sort([int(i) for i in h5["model_snapshots"]])
+
+            history = {}
+            for itr in iterations:
+                z = h5[f"model_snapshots/{itr}/states/z"][()]
+                durs = get_durations(z, mask)
+                history[itr] = np.median(durs)
+
+            final_median_durs.append(history[iterations[-1]])
+            median_dur_histories.append(history)
+
+    fig, axs = plt.subplots(1, 2)
+    for i, (kappa, history) in enumerate(zip(kappas, median_dur_histories)):
+        color = plt.cm.viridis(i / (len(kappas) - 1))
+        label = "{:.1e}".format(kappa)
+        axs[0].plot(*zip(*history.items()), color=color, label=label)
+    axs[0].legend(loc="center left", bbox_to_anchor=(1, 0.5))
+    axs[0].set_xlabel("iteration")
+    axs[0].set_ylabel("median duration")
+
+    axs[1].scatter(kappas, final_median_durs)
+    axs[1].set_xlabel("kappa")
+    axs[1].set_ylabel("final median duration")
+    axs[1].set_xscale("log")
+
+    fig.set_size_inches(figsize)
+    plt.tight_layout()
+    return fig, np.array(final_median_durs)
+
+
 def plot_progress(
     model,
     data,
@@ -507,9 +582,7 @@ def plot_progress(
         saved_iterations = np.sort([int(i) for i in f["model_snapshots"]])
 
     if len(saved_iterations) > 1:
-        fig, axs = plt.subplots(
-            1, 4, gridspec_kw={"width_ratios": [1, 1, 1, 3]}
-        )
+        fig, axs = plt.subplots(1, 4, gridspec_kw={"width_ratios": [1, 1, 1, 3]})
         if fig_size is None:
             fig_size = (12, 2.5)
     else:
@@ -528,9 +601,7 @@ def plot_progress(
 
     lim = int(np.percentile(durations, 95))
     binsize = max(int(np.floor(lim / 30)), 1)
-    axs[1].hist(
-        durations, range=(1, lim), bins=(int(lim / binsize)), density=True
-    )
+    axs[1].hist(durations, range=(1, lim), bins=(int(lim / binsize)), density=True)
     axs[1].set_xlim([1, lim])
     axs[1].set_xlabel("syllable duration (frames)")
     axs[1].set_ylabel("probability")
@@ -548,9 +619,7 @@ def plot_progress(
         for i in saved_iterations:
             with h5py.File(checkpoint_path, "r") as f:
                 z = np.array(f[f"model_snapshots/{i}/states/z"])
-                sample_state_history.append(
-                    z[batch_ix, start : start + window_size]
-                )
+                sample_state_history.append(z[batch_ix, start : start + window_size])
                 median_durations.append(np.median(get_durations(z, mask)))
 
         axs[2].scatter(saved_iterations, median_durations)
@@ -570,9 +639,7 @@ def plot_progress(
         axs[3].set_title("State sequence history")
 
         yticks = [
-            int(y)
-            for y in axs[3].get_yticks()
-            if y < len(saved_iterations) and y > 0
+            int(y) for y in axs[3].get_yticks() if y < len(saved_iterations) and y > 0
         ]
         yticklabels = saved_iterations[yticks]
         axs[3].set_yticks(yticks)
@@ -642,7 +709,7 @@ def _grid_movie_tile(
 
     tile = []
 
-    if videos is not None:  
+    if videos is not None:
         frames = videos[key][start - pre : start + post]
         c = r @ c - window_size // 2
         M = [[np.cos(h), np.sin(h), -c[0]], [-np.sin(h), np.cos(h), -c[1]]]
@@ -654,14 +721,10 @@ def _grid_movie_tile(
                     frame, coords, edges=edges, **plot_options
                 )
 
-            frame = cv2.warpAffine(
-                frame, np.float32(M), (window_size, window_size)
-            )
+            frame = cv2.warpAffine(frame, np.float32(M), (window_size, window_size))
             frame = cv2.resize(frame, (scaled_window_size, scaled_window_size))
             if 0 <= ii - pre <= end - start and dot_radius > 0:
-                pos = tuple(
-                    [int(x) for x in M @ np.append(c, 1) * scale_factor]
-                )
+                pos = tuple([int(x) for x in M @ np.append(c, 1) * scale_factor])
                 cv2.circle(frame, pos, dot_radius, dot_color, -1, cv2.LINE_AA)
             tile.append(frame)
 
@@ -707,7 +770,7 @@ def grid_movie(
 ):
     """Generate a grid movie and return it as an array of frames.
 
-    Grid movies show many instances of a syllable. Each instance contains a
+    Grid movies show many instances of  a syllable. Each instance contains a
     snippet of video (and/or keypoint-overlay) centered on the animal and
     synchronized to the onset of the syllable. A dot appears at syllable onset
     and disappears at syllable offset.
@@ -876,9 +939,7 @@ def get_grid_movie_window_size(
     )
 
     all_trajectories = np.concatenate(all_trajectories, axis=0)
-    all_trajectories = all_trajectories[
-        ~np.isnan(all_trajectories).all((1, 2))
-    ]
+    all_trajectories = all_trajectories[~np.isnan(all_trajectories).all((1, 2))]
     max_distances = np.nanmax(np.abs(all_trajectories), axis=1)
     window_size = np.percentile(max_distances, pctl) * fudge_factor * 2
     window_size = int(np.ceil(window_size / blocksize) * blocksize)
@@ -904,6 +965,8 @@ def generate_grid_movies(
     quality=7,
     window_size=None,
     coordinates=None,
+    centroids=None,
+    headings=None,
     bodyparts=None,
     use_bodyparts=None,
     sampling_options={},
@@ -950,15 +1013,14 @@ def generate_grid_movies(
 
     video_dir: str, default=None
         Directory containing videos of the modeled data (see
-        :py:func:`keypoint_moseq.io.find_matching_videos`).
-        Unless `keypoints_only=True`, either `video_dir` or
-        `video_paths` must be provided.
+        :py:func:`keypoint_moseq.io.find_matching_videos`). Either  `video_dir`
+        or `video_paths` must be provided unless `keypoints_only=True`.
 
     video_paths: dict, default=None
         Dictionary mapping recording names to video paths. The recording
-        names must correspond to keys in `results['syllables']`.
-        Unless `keypoints_only=True`, either `video_dir` or
-        `video_paths` must be provided.
+        names must correspond to keys in the results dictionary. Either
+        `video_dir` or `video_paths` must be provided unless
+        `keypoints_only=True`.
 
     filter_size: int, default=9
         Size of the median filter applied to centroids and headings
@@ -980,6 +1042,14 @@ def generate_grid_movies(
         `window_size=None`, or `overlay_keypoints=True`, or if using
         density-based sampling (i.e. when `sampling_options['mode']=='density'`;
         see :py:func:`keypoint_moseq.util.sample_instances`).
+
+    centroids: dict, default=None
+        Dictionary mapping recording names to arrays of shape `(n_frames, 2)`.
+        Overrides the centroid information in `results`.
+
+    headings: dict, default=None
+        Dictionary mapping recording names to arrays of shape `(n_frames,)`.
+        Overrides the heading information in `results`.
 
     bodyparts: list of str, default=None
         List of bodypart names in `coordinates`. Required when `coordinates` is
@@ -1044,16 +1114,24 @@ def generate_grid_movies(
     keypoint_colormap: str, default='autumn'
         Colormap used to color keypoints. Used when
         `overlay_keypoints=True`.
-        
+
+
     See :py:func:`keypoint_moseq.viz.grid_movie` for the remaining parameters.
+
+    Returns
+    -------
+    sampled_instances: dict
+        Dictionary mapping syllables to lists of instances shown in each in
+        grid movie (in row-major order), where each instance is specified as a
+        tuple with the video name, start frame and end frame.
     """
     # check inputs
-    if not keypoints_only:
+    if keypoints_only:
+        overlay_keypoints = True
+    else:
         assert (video_dir is not None) or (video_paths is not None), fill(
             "Either `video_dir` or `video_paths` is required unless `keypoints_only=True`"
         )
-    elif not overlay_keypoints:
-        overlay_keypoints = True
 
     if window_size is None or overlay_keypoints:
         assert coordinates is not None, fill(
@@ -1071,9 +1149,7 @@ def generate_grid_movies(
 
     # reindex coordinates if necessary
     if not (bodyparts is None or use_bodyparts is None or coordinates is None):
-        coordinates = reindex_by_bodyparts(
-            coordinates, bodyparts, use_bodyparts
-        )
+        coordinates = reindex_by_bodyparts(coordinates, bodyparts, use_bodyparts)
 
     # get edges for plotting skeleton
     edges = []
@@ -1084,9 +1160,18 @@ def generate_grid_movies(
     if results is None:
         results = load_results(project_dir, model_name)
 
+    # extract syllables from results
     syllables = {k: v["syllable"] for k, v in results.items()}
-    centroids = {k: v["centroid"] for k, v in results.items()}
-    headings = {k: v["heading"] for k, v in results.items()}
+
+    # extract and smooth centroids and headings
+    if centroids is None:
+        centroids = {k: v["centroid"] for k, v in results.items()}
+    if headings is None:
+        headings = {k: v["heading"] for k, v in results.items()}
+
+    centroids, headings = filter_centroids_headings(
+        centroids, headings, filter_size=filter_size
+    )
 
     # scale keypoints if necessary
     if keypoints_only:
@@ -1096,13 +1181,14 @@ def generate_grid_movies(
             centroids[k] = v * keypoints_scale
 
     # load video readers if necessary
-    if video_paths is None and not keypoints_only:
-        video_paths = find_matching_videos(
-            results.keys(),
-            video_dir,
-            as_dict=True,
-            video_extension=video_extension,
-        )
+    if not keypoints_only:
+        if video_paths is None:
+            video_paths = find_matching_videos(
+                results.keys(),
+                video_dir,
+                as_dict=True,
+                video_extension=video_extension,
+            )
         videos = {k: OpenCVReader(path) for k, path in video_paths.items()}
         fps = list(videos.values())[0].fps
     else:
@@ -1145,16 +1231,12 @@ def generate_grid_movies(
         if coordinates is not None:
             coordinates = {k: v[:, :, ds] for k, v in coordinates.items()}
 
-    # smooth centroids and headings
-    centroids, headings = filter_centroids_headings(
-        centroids, headings, filter_size=filter_size
-    )
-
     # determine window size for grid movies
     if window_size is None:
         window_size = get_grid_movie_window_size(
             sampled_instances, centroids, headings, coordinates, pre, post
         )
+        print(f"Using window size of {window_size} pixels")
         if keypoints_only:
             if window_size < 64:
                 warnings.warn(
@@ -1209,6 +1291,8 @@ def generate_grid_movies(
 
         path = os.path.join(output_dir, f"syllable{syllable}.mp4")
         write_video_clip(frames, path, fps=fps, quality=quality)
+
+    return sampled_instances
 
 
 def get_limits(
@@ -1269,9 +1353,9 @@ def get_limits(
         padding = np.mod(lims[0] - lims[1], blocksize) / 2
         lims[0] -= padding
         lims[1] += padding
-        lims = np.ceil(lims).astype(int)
+        lims = np.ceil(lims)
 
-    return lims
+    return lims.astype(int)
 
 
 def rasterize_figure(fig):
@@ -1291,8 +1375,9 @@ def plot_trajectories(
     n_cols=4,
     invert=False,
     keypoint_colormap="autumn",
-    node_size=50,
-    line_width=3,
+    keypoint_colors=None,
+    node_size=50.0,
+    line_width=3.0,
     alpha=0.2,
     num_timesteps=10,
     plot_width=4,
@@ -1312,13 +1397,13 @@ def plot_trajectories(
         List of pose trajectories as ndarrays of shape
         (n_frames, n_keypoints, 2).
 
-    edges: list of tuples, default=[]
-        List of edges, where each edge is a tuple of two integers
-
     lims: ndarray
         Axis limits used for all the trajectory plots. The limits
         should be provided as an array of shape (2,2) with the format
         `[[xmin,ymin],[xmax,ymax]]`.
+
+    edges: list of tuples, default=[]
+        List of edges, where each edge is a tuple of two integers
 
     n_cols: int, default=4
         Number of columns in the figure (used when plotting multiple
@@ -1331,6 +1416,11 @@ def plot_trajectories(
     keypoint_colormap : str or list
         Name of a matplotlib colormap or a list of colors as (r,b,g)
         tuples in the same order as as the keypoints.
+
+    keypoint_colors : array-like, shape=(num_keypoints,3), default=None
+        Color for each keypoint. If None, the keypoint colormap is used.
+        If the dtype is int, the values are assumed to be in the range 0-255,
+        otherwise they are assumed to be in the range 0-1.
 
     node_size: int, default=50
         Size of each keypoint.
@@ -1370,12 +1460,13 @@ def plot_trajectories(
         Axis containing the trajectory plots.
     """
     fill_color = "k" if invert else "w"
-    if isinstance(keypoint_colormap, list):
-        colors = keypoint_colormap
+    if keypoint_colors is None:
+        cmap = plt.colormaps[keypoint_colormap]
+        colors = plt.get_cmap(cmap)(np.linspace(0, 1, Xs[0].shape[1]))
+    elif isinstance(keypoint_colors[0][0], int):
+        colors = list(np.array(keypoint_colors) / 255)
     else:
-        colors = plt.colormaps[keypoint_colormap](
-            np.linspace(0, 1, Xs[0].shape[1])
-        )
+        colors = list(keypoint_colors)
 
     n_cols = min(n_cols, len(Xs))
     n_rows = np.ceil(len(Xs) / n_cols)
@@ -1513,7 +1604,9 @@ def generate_trajectory_plots(
     use_bodyparts=None,
     keypoint_colormap="autumn",
     plot_options={},
+    get_limits_pctl=0,
     padding={"left": 0.1, "right": 0.1, "top": 0.2, "bottom": 0.2},
+    lims=None,
     save_individually=True,
     save_gifs=True,
     save_mp4s=False,
@@ -1521,7 +1614,7 @@ def generate_trajectory_plots(
     projection_planes=["xy", "xz"],
     interactive=True,
     density_sample=True,
-    sampling_options={"mode": "density", "n_neighbors": 50},
+    sampling_options={"n_neighbors": 50},
     **kwargs,
 ):
     """
@@ -1570,10 +1663,20 @@ def generate_trajectory_plots(
         Dictionary of options for trajectory plots (see
         :py:func:`keypoint_moseq.util.plot_trajectories`).
 
+    get_limits_pctl: float, default=0
+        Percentile to use for determining the axis limits. Higher values lead
+        to tighter axis limits.
+
     padding: dict, default={'left':0.1, 'right':0.1, 'top':0.2, 'bottom':0.2}
         Padding around trajectory plots. Controls the the distance
         between trajectories (when multiple are shown in one figure)
         as well as the title offset.
+
+    lims: ndarray of shape (2,2), default=None
+        Axis limits used for all the trajectory plots with format
+        `[[xmin,ymin],[xmax,ymax]]`. If None, the limits are determined
+        automatically based on the coordinates of the keypoints using
+        :py:func:`keypoint_moseq.viz.get_limits`.
 
     save_individually: bool, default=True
         If True, a separate figure is saved for each syllable (in
@@ -1633,21 +1736,28 @@ def generate_trajectory_plots(
         assert set(projection_planes) <= set(["xy", "yz", "xz"]), fill(
             "`projection_planes` must be a subset of `['xy','yz','xz']`"
         )
-        all_Xs = [
-            Xs[
-                ...,
-                np.array({"xy": [0, 1], "yz": [1, 2], "xz": [0, 2]}[plane]),
-            ]
-            for plane in projection_planes
-        ]
-        suffixes = ["." + plane for plane in projection_planes]
+        if lims is not None:
+            assert lims.shape == (2, 3), fill(
+                "`lims` must be None or an ndarray of shape (2,3) when plotting 3D data"
+            )
+        all_Xs, all_lims, suffixes = [], [], []
+        for plane in projection_planes:
+            use_dims = {"xy": [0, 1], "yz": [1, 2], "xz": [0, 2]}[plane]
+            all_Xs.append(Xs[..., use_dims])
+            suffixes.append("." + plane)
+            if lims is None:
+                all_lims.append(get_limits(all_Xs[-1], pctl=get_limits_pctl, **padding))
+            else:
+                all_lims.append(lims[..., use_dims])
+
     else:
         all_Xs = [Xs * np.array([1, -1])]  # flip y-axis
+        if lims is None:
+            lims = get_limits(all_Xs[-1], pctl=get_limits_pctl, **padding)
+        all_lims = [lims]
         suffixes = [""]
 
-    for Xs_2D, suffix in zip(all_Xs, suffixes):
-        lims = get_limits(Xs_2D, pctl=0, **padding)
-
+    for Xs_2D, lims, suffix in zip(all_Xs, all_lims, suffixes):
         # individual plots
         if save_individually:
             desc = "Generating trajectory plots"
@@ -1706,6 +1816,7 @@ def overlay_keypoints_on_image(
     coordinates,
     edges=[],
     keypoint_colormap="autumn",
+    keypoint_colors=None,
     node_size=5,
     line_width=2,
     copy=False,
@@ -1727,6 +1838,11 @@ def overlay_keypoints_on_image(
 
     keypoint_colormap: str, default='autumn'
         Name of a matplotlib colormap to use for coloring the keypoints.
+
+    keypoint_colors : array-like, shape=(num_keypoints,3), default=None
+        Color for each keypoint. If None, the keypoint colormap is used.
+        If the dtype is int, the values are assumed to be in the range 0-255,
+        otherwise they are assumed to be in the range 0-1.
 
     node_size: int, default=5
         Size of the keypoints.
@@ -1750,11 +1866,14 @@ def overlay_keypoints_on_image(
     else:
         canvas = image
 
-    # get colors from matplotlib and convert to 0-255 range for opencv
-    colors = plt.colormaps[keypoint_colormap](
-        np.linspace(0, 1, coordinates.shape[0])
-    )
-    colors = [tuple([int(c) for c in cs[:3] * 255]) for cs in colors]
+    if keypoint_colors is None:
+        cmap = plt.colormaps[keypoint_colormap]
+        colors = np.array(cmap(np.linspace(0, 1, coordinates.shape[0])))[:, :3]
+    else:
+        colors = np.array(keypoint_colors)
+
+    if isinstance(colors[0, 0], float):
+        colors = [tuple([int(c) for c in cs * 255]) for cs in colors]
 
     # overlay skeleton
     for i, j in edges:
@@ -1762,57 +1881,18 @@ def overlay_keypoints_on_image(
             continue
         pos1 = (int(coordinates[i, 0]), int(coordinates[i, 1]))
         pos2 = (int(coordinates[j, 0]), int(coordinates[j, 1]))
-        canvas = cv2.line(
-            canvas, pos1, pos2, colors[i], line_width, cv2.LINE_AA
-        )
+        canvas = cv2.line(canvas, pos1, pos2, colors[i], line_width, cv2.LINE_AA)
 
     # overlay keypoints
     for i, (x, y) in enumerate(coordinates):
         if np.isnan(x) or np.isnan(y):
             continue
         pos = (int(x), int(y))
-        canvas = cv2.circle(
-            canvas, pos, node_size, colors[i], -1, lineType=cv2.LINE_AA
-        )
+        canvas = cv2.circle(canvas, pos, node_size, colors[i], -1, lineType=cv2.LINE_AA)
 
     if opacity < 1.0:
         image = cv2.addWeighted(image, 1 - opacity, canvas, opacity, 0)
     return image
-
-
-def overlay_trajectory_on_video(
-    frames,
-    trajectory,
-    smoothing_kernel=1,
-    highlight=None,
-    min_opacity=0.2,
-    max_opacity=1,
-    num_ghosts=5,
-    interval=2,
-    plot_options={},
-    edges=[],
-):
-    """
-    Overlay a trajectory of keypoints on a video.
-    """
-    if smoothing_kernel > 0:
-        trajectory = gaussian_filter1d(trajectory, smoothing_kernel, axis=0)
-
-    opacities = np.repeat(
-        np.linspace(max_opacity, min_opacity, num_ghosts + 1), interval
-    )
-    for i in np.arange(0, trajectory.shape[0], interval):
-        for j, opacity in enumerate(opacities):
-            if i + j < frames.shape[0]:
-                plot_options["opacity"] = opacity
-                if highlight is not None:
-                    start, end, highlight_factor = highlight
-                    if i + j < start or i + j > end:
-                        plot_options["opacity"] *= highlight_factor
-                frames[i + j] = overlay_keypoints_on_image(
-                    frames[i + j], trajectory[i], edges=edges, **plot_options
-                )
-    return frames
 
 
 def overlay_keypoints_on_video(
@@ -1880,12 +1960,11 @@ def overlay_keypoints_on_video(
     """
     if output_path is None:
         output_path = os.path.splitext(video_path)[0] + "_keypoints.mp4"
+        print(f"Saving video to {output_path}")
 
     if bodyparts is not None:
         if use_bodyparts is not None:
-            coordinates = reindex_by_bodyparts(
-                coordinates, bodyparts, use_bodyparts
-            )
+            coordinates = reindex_by_bodyparts(coordinates, bodyparts, use_bodyparts)
         else:
             use_bodyparts = bodyparts
         edges = get_edges(use_bodyparts, skeleton)
@@ -1900,70 +1979,44 @@ def overlay_keypoints_on_video(
             crop_centroid, centroid_smoothing_filter, axis=0
         )
 
-    with imageio.get_reader(video_path) as reader:
-        fps = reader.get_meta_data()["fps"]
-        if frames is None:
-            frames = np.arange(reader.count_frames())
+    reader = OpenCVReader(video_path)
+    fps = reader.fps
+    if frames is None:
+        frames = np.arange(len(reader))
 
-        with imageio.get_writer(
-            output_path, pixelformat="yuv420p", fps=fps, quality=quality
-        ) as writer:
-            for frame in tqdm.tqdm(frames, ncols=72):
-                image = reader.get_data(frame)
+    with imageio.get_writer(
+        output_path, pixelformat="yuv420p", fps=fps, quality=quality
+    ) as writer:
+        for frame in tqdm.tqdm(frames, ncols=72):
+            image = overlay_keypoints_on_image(
+                reader[frame], coordinates[frame], edges=edges, **plot_options
+            )
 
-                image = overlay_keypoints_on_image(
-                    image, coordinates[frame], edges=edges, **plot_options
+            if crop_size is not None:
+                image = crop_image(image, crop_centroid[frame], crop_size)
+
+            if show_frame_numbers:
+                image = cv2.putText(
+                    image,
+                    f"Frame {frame}",
+                    (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    text_color,
+                    1,
+                    cv2.LINE_AA,
                 )
 
-                if crop_size is not None:
-                    image = crop_image(image, crop_centroid[frame], crop_size)
-
-                if show_frame_numbers:
-                    image = cv2.putText(
-                        image,
-                        f"Frame {frame}",
-                        (10, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        text_color,
-                        1,
-                        cv2.LINE_AA,
-                    )
-
-                writer.append_data(image)
-
-
-def matplotlib_colormap_to_plotly(cmap):
-    """
-    Convert a matplotlib colormap to a plotly colormap.
-
-    Parameters
-    ----------
-    cmap: str
-        Name of a matplotlib colormap.
-
-    Returns
-    -------
-    pl_colorscale: list
-        Plotly colormap.
-    """
-    cmap = plt.colormaps[cmap]
-    pl_entries = 255
-    h = 1.0 / (pl_entries - 1)
-    pl_colorscale = []
-    for k in range(pl_entries):
-        C = (np.array(cmap(k * h)[:3]) * 255).astype(np.uint8)
-        pl_colorscale.append([k * h, "rgb" + str((C[0], C[1], C[2]))])
-    return pl_colorscale
+            writer.append_data(image)
 
 
 def add_3D_pose_to_plotly_fig(
     fig,
     coords,
     edges,
-    keypoint_colormap="autumn",
-    node_size=6.0,
-    linewidth=3.0,
+    keypoint_colors,
+    node_size=50.0,
+    line_width=3.0,
     visible=True,
     opacity=1,
 ):
@@ -1981,13 +2034,15 @@ def add_3D_pose_to_plotly_fig(
     edges: list of index pairs
         Skeleton edges
 
-    keypoint_colormap: str, default='autumn'
-        Colormap to use for coloring keypoints.
+    keypoint_colors : array-like with shape (num_keypoints,3)
+        Color for each keypoint. If None, the keypoint colormap is used.
+        If the dtype is int, the values are assumed to be in the range 0-255,
+        otherwise they are assumed to be in the range 0-1.
 
-    node_size: float, default=6.0
+    node_size: float, default=50.0
         Size of keypoints.
 
-    linewidth: float, default=3.0
+    line_width: float, default=3.0
         Width of skeleton edges.
 
     visibility: bool, default=True
@@ -1996,15 +2051,17 @@ def add_3D_pose_to_plotly_fig(
     opacity: float, default=1
         Opacity of the nodes and edges (0-1)
     """
+    if isinstance(keypoint_colors[0, 0], int):
+        keypoint_colors = np.array(keypoint_colors) / 255.0
+
     marker = {
-        "size": node_size,
-        "color": np.linspace(0, 1, len(coords)),
-        "colorscale": matplotlib_colormap_to_plotly(keypoint_colormap),
+        "size": node_size / 10,
+        "color": keypoint_colors,
         "line": dict(color="black", width=0.5),
         "opacity": opacity,
     }
 
-    line = {"width": linewidth, "color": f"rgba(0,0,0,{opacity})"}
+    line = {"width": line_width, "color": f"rgba(0,0,0,{opacity})"}
 
     fig.add_trace(
         plotly.graph_objs.Scatter3d(
@@ -2029,16 +2086,32 @@ def add_3D_pose_to_plotly_fig(
             )
         )
 
+    if keypoint_colors is None:
+        # Use a default color (for example, red) if no colors are provided
+        keypoint_colors = ["red"] * len(coords)
+    elif isinstance(keypoint_colors[0], int):
+        # Convert RGB values from [0, 255] to [0, 1]
+        keypoint_colors = np.array(keypoint_colors) / 255.0
+    else:
+        keypoint_colors = keypoint_colors
+
+    marker = {
+        "size": node_size,
+        "color": keypoint_colors,
+        "line": dict(color="black", width=0.5),
+        "opacity": opacity,
+    }
+
 
 def plot_pcs_3D(
     ymean,
     ypcs,
     edges,
-    keypoint_colormap,
+    keypoint_colors,
     savefig,
     project_dir=None,
-    node_size=6,
-    linewidth=2,
+    node_size=50,
+    line_width=3,
     height=400,
     mean_pose_opacity=0.2,
 ):
@@ -2059,8 +2132,10 @@ def plot_pcs_3D(
     edges : list of index pairs
         Skeleton edges.
 
-    keypoint_colormap : str
-        Name of a matplotlib colormap to use for coloring the keypoints.
+    keypoint_colors : array-like, shape=(num_keypoints,3), default=None
+        Color for each keypoint. If None, the keypoint colormap is used.
+        If the dtype is int, the values are assumed to be in the range 0-255,
+        otherwise they are assumed to be in the range 0-1.
 
     savefig : bool
         Whether to save the figure to a file. If true, the figure is
@@ -2069,10 +2144,10 @@ def plot_pcs_3D(
     project_dir : str, default=None
         Path to the project directory. Required if `savefig` is True.
 
-    node_size : float, default=30.0
+    node_size : float, default=50.0
         Size of the keypoints in the figure.
 
-    linewidth: float, default=2.0
+    line_width: float, default=3.0
         Width of edges in skeleton
 
     height : int, default=400
@@ -2097,10 +2172,10 @@ def plot_pcs_3D(
             fig,
             coords,
             edges,
+            keypoint_colors,
             visible=(i == 0),
             node_size=node_size,
-            linewidth=linewidth,
-            keypoint_colormap=keypoint_colormap,
+            line_width=line_width,
         )
 
         steps.append(
@@ -2115,10 +2190,10 @@ def plot_pcs_3D(
         fig,
         ymean,
         edges,
+        keypoint_colors,
         opacity=mean_pose_opacity,
         node_size=node_size,
-        linewidth=linewidth,
-        keypoint_colormap=keypoint_colormap,
+        line_width=line_width,
     )
 
     fig.update_layout(
@@ -2152,8 +2227,9 @@ def plot_trajectories_3D(
     edges,
     output_dir,
     keypoint_colormap="autumn",
-    node_size=8,
-    linewidth=3,
+    keypoint_colors=None,
+    node_size=50.0,
+    line_width=3.0,
     height=500,
     skiprate=1,
 ):
@@ -2177,10 +2253,15 @@ def plot_trajectories_3D(
     keypoint_colormap : str, default='autumn'
         Name of a matplotlib colormap to use for coloring the keypoints.
 
-    node_size : float, default=8.0
+    keypoint_colors : array-like, shape=(num_keypoints,3), default=None
+        Color for each keypoint. If None, the keypoint colormap is used.
+        If the dtype is int, the values are assumed to be in the range 0-255,
+        otherwise they are assumed to be in the range 0-1.
+
+    node_size : float, default=50.0
         Size of the keypoints in the figure.
 
-    linewidth: float, default=3.0
+    line_width: float, default=3.0
         Width of edges in skeleton
 
     height : int, default=500
@@ -2190,6 +2271,10 @@ def plot_trajectories_3D(
         Plot every `skiprate` frames.
     """
     from plotly.subplots import make_subplots
+
+    if keypoint_colors is None:
+        cmap = plt.colormaps[keypoint_colormap]
+        keypoint_colors = np.array(cmap(np.linspace(0, 1, Xs.shape[2])))[:, :3]
 
     fig = make_subplots(rows=1, cols=1, specs=[[{"type": "scatter3d"}]])
     Xs = Xs[:, ::skiprate]
@@ -2208,10 +2293,10 @@ def plot_trajectories_3D(
                 fig,
                 coords,
                 edges,
+                keypoint_colors,
                 visible=(i == 0),
                 node_size=node_size,
-                linewidth=linewidth,
-                keypoint_colormap=keypoint_colormap,
+                line_width=line_width,
                 opacity=opacity,
             )
 
@@ -2297,9 +2382,7 @@ def plot_similarity_dendrogram(
     figsize: tuple of float, default=(10,5)
         Size of the dendrogram plot.
     """
-    save_path = _get_path(
-        project_dir, model_name, save_path, "similarity_dendrogram"
-    )
+    save_path = _get_path(project_dir, model_name, save_path, "similarity_dendrogram")
 
     distances, syllable_ixs = syllable_similarity(
         coordinates,
@@ -2330,3 +2413,487 @@ def plot_similarity_dendrogram(
     print(f"Saving dendrogram plot to {save_path}")
     for ext in ["pdf", "png"]:
         plt.savefig(save_path + "." + ext)
+
+
+def matplotlib_colormap_to_plotly(cmap):
+    """
+    Convert a matplotlib colormap to a plotly colormap.
+
+    Parameters
+    ----------
+    cmap: str
+        Name of a matplotlib colormap.
+
+    Returns
+    -------
+    pl_colorscale: list
+        Plotly colormap.
+    """
+    cmap = plt.colormaps[cmap]
+    pl_entries = 255
+    h = 1.0 / (pl_entries - 1)
+    pl_colorscale = []
+    for k in range(pl_entries):
+        C = (np.array(cmap(k * h)[:3]) * 255).astype(np.uint8)
+        pl_colorscale.append([k * h, "rgb" + str((C[0], C[1], C[2]))])
+    return pl_colorscale
+
+
+def initialize_3D_plot(height=500):
+    """Create an empty 3D plotly figure."""
+    fig = make_subplots(rows=1, cols=1, specs=[[{"type": "scatter3d"}]])
+    fig.update_layout(
+        height=height,
+        showlegend=False,
+        scene=dict(
+            xaxis=dict(showgrid=False, showbackground=False),
+            yaxis=dict(showgrid=False, showbackground=False),
+            zaxis=dict(showgrid=False, showline=True, linecolor="black"),
+            bgcolor="white",
+            aspectmode="data",
+        ),
+        margin=dict(l=20, r=20, b=0, t=0, pad=10),
+    )
+    return fig
+
+
+def add_3D_pose_to_fig(
+    fig,
+    coords,
+    edges,
+    keypoint_colormap="autumn",
+    node_size=6.0,
+    linewidth=3.0,
+    visible=True,
+    opacity=1,
+):
+    """Add a 3D pose to a plotly figure.
+
+    Parameters
+    ----------
+    fig: plotly figure
+        Figure to which the pose should be added.
+
+    coords: ndarray (N,3)
+        3D coordinates of the pose.
+
+    edges: list of index pairs
+        Skeleton edges
+
+    keypoint_colormap: str, default='autumn'
+        Colormap to use for coloring keypoints.
+
+    node_size: float, default=6.0
+        Size of keypoints.
+
+    linewidth: float, default=3.0
+        Width of skeleton edges.
+
+    visibility: bool, default=True
+        Initial visibility state of the nodes and edges
+
+    opacity: float, default=1
+        Opacity of the nodes and edges (0-1)
+    """
+    marker = {
+        "size": node_size,
+        "color": np.linspace(0, 1, len(coords)),
+        "colorscale": matplotlib_colormap_to_plotly(keypoint_colormap),
+        "line": dict(color="black", width=0.5),
+        "opacity": opacity,
+    }
+
+    line = {"width": linewidth, "color": f"rgba(0,0,0,{opacity})"}
+
+    fig.add_trace(
+        plotly.graph_objs.Scatter3d(
+            x=coords[:, 0],
+            y=coords[:, 1],
+            z=coords[:, 2],
+            mode="markers",
+            visible=visible,
+            marker=marker,
+        )
+    )
+
+    for e in edges:
+        fig.add_trace(
+            plotly.graph_objs.Scatter3d(
+                x=coords[e, 0],
+                y=coords[e, 1],
+                z=coords[e, 2],
+                mode="lines",
+                visible=visible,
+                line=line,
+            )
+        )
+
+
+def plot_pcs_3D(
+    ymean,
+    ypcs,
+    edges,
+    keypoint_colormap,
+    project_dir=None,
+    node_size=6,
+    linewidth=2,
+    height=400,
+    mean_pose_opacity=0.2,
+):
+    """
+    Visualize the components of a fitted PCA model based on 3D components.
+
+    For each PC, a subplot shows the mean pose (semi-transparent) along
+    with a perturbation of the mean pose in the direction of the PC.
+
+    Parameters
+    ----------
+    ymean : ndarray (num_bodyparts, 3)
+        Mean pose.
+
+    ypcs : ndarray (num_pcs, num_bodyparts, 3)
+        Perturbations of the mean pose in the direction of each PC.
+
+    edges : list of index pairs
+        Skeleton edges.
+
+    keypoint_colormap : str
+        Name of a matplotlib colormap to use for coloring the keypoints.
+
+    project_dir : str, default=None
+        Path to the project directory. Required if `savefig` is True.
+
+    node_size : float, default=30.0
+        Size of the keypoints in the figure.
+
+    linewidth: float, default=2.0
+        Width of edges in skeleton
+
+    height : int, default=400
+        Height of the figure in pixels.
+
+    mean_pose_opacity: float, default=0.4
+        Opacity of the mean pose
+    """
+    fig = initialize_3D_plot(height)
+
+    def visibility_mask(i):
+        visible = np.zeros((len(edges) + 1) * (len(ypcs) + 1))
+        visible[-(len(edges) + 1) :] = 1
+        visible[(len(edges) + 1) * i : (len(edges) + 1) * (i + 1)] = 1
+        return visible > 0
+
+    steps = []
+    for i, coords in enumerate(ypcs):
+        add_3D_pose_to_fig(
+            fig,
+            coords,
+            edges,
+            visible=(i == 0),
+            node_size=node_size,
+            linewidth=linewidth,
+            keypoint_colormap=keypoint_colormap,
+        )
+
+        steps.append(
+            dict(
+                method="update",
+                label=f"PC {i+1}",
+                args=[{"visible": visibility_mask(i)}],
+            )
+        )
+
+    add_3D_pose_to_fig(
+        fig,
+        ymean,
+        edges,
+        opacity=mean_pose_opacity,
+        node_size=node_size,
+        linewidth=linewidth,
+        keypoint_colormap=keypoint_colormap,
+    )
+
+    fig.update_layout(sliders=[dict(steps=steps)])
+
+    if project_dir is not None:
+        save_path = os.path.join(project_dir, f"pcs.html")
+        fig.write_html(save_path)
+        print(f"Saved interactive plot to {save_path}")
+
+    fig.show()
+
+
+def plot_trajectories_3D(
+    Xs,
+    titles,
+    edges,
+    output_dir,
+    keypoint_colormap="autumn",
+    node_size=8,
+    linewidth=3,
+    height=500,
+    skiprate=1,
+):
+    """
+    Visualize a set of 3D trajectories.
+
+    Parameters
+    ----------
+    Xs : list of ndarrays (num_syllables, num_frames, num_bodyparts, 3)
+        Trajectories to visualize.
+
+    titles : list of str
+        Title for each trajectory.
+
+    edges : list of index pairs
+        Skeleton edges.
+
+    output_dir : str
+        Path to save the interactive plot.
+
+    keypoint_colormap : str, default='autumn'
+        Name of a matplotlib colormap to use for coloring the keypoints.
+
+    node_size : float, default=8.0
+        Size of the keypoints in the figure.
+
+    linewidth: float, default=3.0
+        Width of edges in skeleton
+
+    height : int, default=500
+        Height of the figure in pixels.
+
+    skiprate : int, default=1
+        Plot every `skiprate` frames.
+    """
+    fig = initialize_3D_plot(height)
+
+    def visibility_mask(i):
+        n = (len(edges) + 1) * len(Xs[1])
+        visible = np.zeros(n * len(Xs))
+        visible[n * i : n * (i + 1)] = 1
+        return visible > 0
+
+    steps = []
+    Xs = Xs[:, ::skiprate]
+    for i, X in enumerate(Xs):
+        opacities = np.linspace(0.3, 1, len(X) + 1)[1:] ** 2
+        for coords, opacity in zip(X, opacities):
+            add_3D_pose_to_fig(
+                fig,
+                coords,
+                edges,
+                visible=(i == 0),
+                node_size=node_size,
+                linewidth=linewidth,
+                keypoint_colormap=keypoint_colormap,
+                opacity=opacity,
+            )
+
+        steps.append(
+            dict(
+                method="update",
+                label=titles[i],
+                args=[{"visible": visibility_mask(i)}],
+            )
+        )
+
+    fig.update_layout(sliders=[dict(steps=steps)])
+
+    if output_dir is not None:
+        save_path = os.path.join(output_dir, f"all_trajectories.html")
+        fig.write_html(save_path)
+        print(f"Saved interactive trajectories plot to {save_path}")
+
+    fig.show()
+
+
+def plot_poses_3D(
+    poses,
+    edges,
+    keypoint_colormap="autumn",
+    node_size=6.0,
+    linewidth=3.0,
+):
+    """Plot a sequence of 3D poses.
+
+    Parameters
+    ----------
+    poses: array of shape (num_poses, num_bodyparts, 3)
+        3D poses to plot.
+
+    edges: list of index pairs
+        Skeleton edges.
+
+    keypoint_colormap: str, default='autumn'
+        Colormap to use for coloring keypoints.
+
+    node_size: float, default=6.0
+        Size of keypoints.
+
+    linewidth: float, default=3.0
+        Width of skeleton edges.
+    """
+    fig = initialize_3D_plot()
+
+    def visibility_mask(i):
+        n = len(edges) + 1
+        visible = np.zeros(n * len(poses))
+        visible[n * i : n * (i + 1)] = 1
+        return visible > 0
+
+    steps = []
+
+    for i, pose in enumerate(poses):
+        add_3D_pose_to_fig(
+            fig,
+            pose,
+            edges,
+            visible=(i == 0),
+            keypoint_colormap=keypoint_colormap,
+            node_size=node_size,
+            linewidth=linewidth,
+        )
+
+        steps.append(
+            dict(
+                method="update",
+                label=f"Pose {i+1}",
+                args=[{"visible": visibility_mask(i)}],
+            )
+        )
+
+    fig.update_layout(sliders=[dict(steps=steps)])
+    fig.show()
+
+
+def hierarchical_clustering_order(X, dist_metric="euclidean", linkage_method="ward"):
+    """Linearly order a set of points using hierarchical clustering.
+
+    Parameters
+    ----------
+    X: ndarray of shape (num_points, num_features)
+        Points to order.
+
+    dist_metric: str, default='euclidean'
+        Distance metric to use.
+
+    linkage_method: str, default='ward'
+        Linkage method to use.
+
+    Returns
+    -------
+    ordering: ndarray of shape (num_points,)
+        Linear ordering of the points.
+    """
+    D = pdist(X, dist_metric)
+    Z = linkage(D, linkage_method)
+    ordering = leaves_list(Z)
+    return ordering
+
+
+def plot_confusion_matrix(
+    results1, results2, min_frequency=0.005, sort=True, normalize=True
+):
+    """Plot a confusion matrix that compares syllables across two models.
+
+    Parameters
+    ----------
+    results1: dict
+        Dictionary containing modeling results for the first model (see
+        :py:func:`keypoint_moseq.fitting.extract_results`).
+
+    results2: dict
+        Dictionary containing modeling results for the second model (see
+        :py:func:`keypoint_moseq.fitting.extract_results`).
+
+    min_frequency: float, default=0.005
+        Minimum frequency of a syllable to include in the confusion matrix.
+
+    sort: bool, default=True
+        Whether to sort the syllables from each model to emphasize the diagonal.
+
+    normalize: bool, default=True
+        Whether to row-normalize the confusion matrix.
+
+    Returns
+    -------
+    fig: matplotlib figure
+        Figure containing the confusion matrix.
+
+    ax: matplotlib axis
+        Axis containing the confusion matrix.
+    """
+    syllables1 = np.concatenate(
+        [results1[k]["syllable"] for k in sorted(results1.keys())]
+    )
+    syllables2 = np.concatenate(
+        [results2[k]["syllable"] for k in sorted(results2.keys())]
+    )
+
+    C = np.zeros((np.max(syllables1) + 1, np.max(syllables2) + 1))
+    np.add.at(C, (syllables1, syllables2), 1)
+
+    if normalize:
+        C = C / np.sum(C, axis=1, keepdims=True)
+
+    ix1 = (get_frequencies(syllables1) > 0.005).nonzero()[0]
+    ix2 = (get_frequencies(syllables2) > 0.005).nonzero()[0]
+    C = C[ix1, :][:, ix2]
+
+    if sort:
+        row_order = hierarchical_clustering_order(C)
+        C = C[row_order, :]
+        ix1 = ix1[row_order]
+
+        col_order = np.argsort(np.argmax(C, axis=0))
+        C = C[:, col_order]
+        ix2 = ix2[col_order]
+
+    fig, ax = plt.subplots(1, 1)
+    im = ax.imshow(C)
+    ax.set_xticks(np.arange(len(ix2)))
+    ax.set_xticklabels(ix2)
+    ax.set_yticks(np.arange(len(ix1)))
+    ax.set_yticklabels(ix1)
+    ax.set_xlabel("Model 2")
+    ax.set_ylabel("Model 1")
+    ax.set_title("Confusion matrix")
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Probability")
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_eml_scores(eml_scores, eml_std_errs, model_names):
+    """Plot expected marginal likelihood scores for a set of models.
+
+    Parameters
+    ----------
+    eml_scores: ndarray of shape (num_models,)
+        EML score for each model.
+
+    eml_std_errs: ndarray of shape (num_models,)
+        Standard error of the EML score for each model.
+
+    model_names: list of str
+        Name of each model.
+    """
+    num_models = len(eml_scores)
+    ordering = np.argsort(eml_scores)
+    eml_scores = eml_scores[ordering]
+    eml_std_errs = eml_std_errs[ordering]
+    model_names = [model_names[i] for i in ordering]
+
+    err_low = eml_scores - eml_std_errs
+    err_high = eml_scores + eml_std_errs
+
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3.5))
+    for i in range(num_models):
+        ax.plot([i, i], [err_low[i], err_high[i]], c="k", linewidth=1)
+    ax.scatter(range(num_models), eml_scores, c="k")
+    ax.set_xticks(range(num_models))
+    ax.set_xticklabels(model_names, rotation=90)
+    ax.set_ylabel("EML score")
+    plt.tight_layout()
+    return fig, ax

@@ -1,20 +1,24 @@
 Local installation
 ------------------
 
-- To use keypoint MoSeq without a local installation, try `Google colab <colab>`_.
-- Note that the first import of ``keypoint_moseq`` after installation can take a few minutes.
-- If you are using a GPU, confirm that jax has access to it once installation is complete::
+- Total installation time is around 10 minutes.
+- The first import of keypoint_moseq after installation can take a few minutes.
+- If you experience any issues, reach out to us on `slack <https://join.slack.com/t/moseqworkspace/shared_invite/zt-151x0shoi-z4J0_g_5rwJDlO1IfCU34A>`_! We're happy to help.
 
-   python -c "import jax; print(jax.devices())"
+.. note::
+
+   If using Windows, make sure to run all the commands below from an Anaconda Prompt.
 
 
 Install using conda
 ~~~~~~~~~~~~~~~~~~~
 
+
+
 Use conda environment files to automatically install the appropriate GPU drivers and other dependencies. Start by cloning the repository::
 
    git clone https://github.com/dattalab/keypoint-moseq
-   cd keypoint-moseq # (`chdir keypoint-moseq` if using Windows)
+   cd keypoint-moseq
 
 Install the appropriate conda environment for your platform::
 
@@ -37,16 +41,15 @@ Activate the new environment::
 
    conda activate keypoint_moseq
 
-*Windows users only:* install pytables::
 
-   conda install -c conda-forge pytables
-
-To use the keypoint_moseq environment in a notebook, either launch jupyterlab (`jupyter lab`) or register the environment as a jupyter notebook kernel as follows::
+To run keypoint-moseq in jupyter, either launch jupyterlab directly from the `keypoint_moseq` environment or register a globally-accessible jupyter kernel as follows::
 
    python -m ipykernel install --user --name=keypoint_moseq
    
+   
+.. note::
 
-Next follow `Install jupyter extensions`_ to use the interactive analysis tools. 
+   If you are using Windows with a GPU and see the error ``XlaRuntimeError: UNKNOWN: no kernel image is available for execution on the device`` try updating your GPU drivers to the latest version. 
 
 
 Install using pip
@@ -54,10 +57,9 @@ Install using pip
 
 .. note::
 
-   If you are using Windows with a GPU, CUDA 11.1 / cuDNN 8.2 is required. If you have a different version of CUDA installed, then follow the directions to `Install using conda`_.
+   If you are using Windows with a GPU and would like to pip install keypoint-moseq, then you must also have CUDA 11.1 / cuDNN 8.2 installed system-wide (i.e. through the usual Windows OS). Furthermore, if you are using Windows 11, you must use Windows Subsystem for Linux.
 
-
-Create a new conda environment::
+Create a new conda environment with python 3.9::
 
    conda create -n keypoint_moseq python=3.9
    conda activate keypoint_moseq
@@ -65,7 +67,7 @@ Create a new conda environment::
 Install jax using one of the lines below::
 
    # MacOS or Linux (CPU)
-   pip install "jax[cpu]==0.3.22"
+   pip install "jax[cpu]==0.3.22" -f https://storage.googleapis.com/jax-releases/jax_releases.html
 
    # MacOS or Linux (GPU)
    pip install "jax[cuda11_cudnn82]==0.3.22" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
@@ -80,36 +82,6 @@ Install `keypoint-moseq <https://github.com/dattalab/keypoint-moseq>`_::
 
    pip install keypoint-moseq
 
-**Windows users only:** install pytables::
-
-   conda install -c conda-forge pytables
-
-Make the environment available to jupyter::
+To run keypoint-moseq in jupyter, either launch jupyterlab directly from the ``keypoint_moseq`` environment or register a globally-accessible jupyter kernel as follows::
 
    python -m ipykernel install --user --name=keypoint_moseq
-
-
-Next follow `Install jupyter extensions`_ to use the interactive analysis tools. 
-
-
-Install jupyter extensions
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-To use the interactive widgets in the analysis notebook, install the required jupyter extensions by running the following lines from a terminal in which the ``keypoint_moseq`` environment is active.
-
-**Windows users only:** conda install the jupyter extensions package::
-
-   conda install -c conda-forge jupyter_contrib_nbextensions
-
-
-**All users:** run the following lines::
-
-   # Install and Enable widget extensions configurator
-   jupyter nbextension install --py jupyter_nbextensions_configurator --sys-prefix
-   jupyter nbextension enable --py --sys-prefix widgetsnbextension
-   jupyter nbextension enable --py --sys-prefix  --py qgrid
-
-   # Install bokeh extensions
-   jupyter nbextension install --sys-prefix --symlink --py jupyter_bokeh
-   jupyter nbextension enable jupyter_bokeh --py --sys-prefix
-

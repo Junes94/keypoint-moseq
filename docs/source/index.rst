@@ -26,16 +26,20 @@ Motion Sequencing (MoSeq) is an unsupervised machine learning method for animal 
 
 
 .. toctree::
-   :caption: Tutorial
+   :caption: Tutorials
 
    modeling
    analysis
-   changepoints
 
 .. toctree::
    :caption: FAQs
 
    FAQs
+
+.. toctree::
+   :caption: Advanced topics
+
+   advanced
 
 .. toctree::
    :caption: Developer API

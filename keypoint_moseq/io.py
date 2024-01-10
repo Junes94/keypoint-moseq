@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import jax
+import re
 import numpy as np
-import warnings
 import h5py
 import joblib
 import tqdm
@@ -12,6 +12,7 @@ from textwrap import fill
 import sleap_io
 from pynwb import NWBHDF5IO
 from ndx_pose import PoseEstimation
+from itertools import islice
 
 from keypoint_moseq.util import list_files_with_exts, check_nan_proportions
 from jax_moseq.utils import get_frequencies, unbatch
@@ -607,10 +608,10 @@ def extract_results(
 
         results.h5
         ├──recording_name1
-        │  ├──syllable      # model state sequence (z), shape=(T,)
-        │  ├──latent_state  # model latent state (x), shape=(T,latent_dim)
-        │  ├──centroid      # model centroid (v), shape=(T,dim)
-        │  └──heading       # model heading (h), shape=(T,)
+        │  ├──syllable      # model state sequence (z), shape=(num_timepoints,)
+        │  ├──latent_state  # model latent state (x), shape=(num_timepoints,latent_dim)
+        │  ├──centroid      # model centroid (v), shape=(num_timepoints,keypoint_dim)
+        │  └──heading       # model heading (h), shape=(num_timepoints,)
         ⋮
 
     Parameters
@@ -647,20 +648,16 @@ def extract_results(
         path = _get_path(project_dir, model_name, path, "results.h5")
 
     states = jax.device_get(model["states"])
-    keys, bounds = metadata
 
     # extract syllables; repeat first syllable an extra `nlags` times
     nlags = states["x"].shape[1] - states["z"].shape[1]
-    syllables = unbatch(states["z"], keys, bounds + np.array([nlags, 0]))
-    syllables = {
-        k: np.pad(z[nlags:], (nlags, 0), mode="edge")
-        for k, z in syllables.items()
-    }
+    z = np.pad(states["z"], ((0,0),(nlags, 0)), mode="edge")
+    syllables = unbatch(z, *metadata)
 
     # extract latent state, centroid, and heading
-    latent_state = unbatch(states["x"], keys, bounds)
-    centroid = unbatch(states["v"], keys, bounds)
-    heading = unbatch(states["h"], keys, bounds)
+    latent_state = unbatch(states["x"], *metadata)
+    centroid = unbatch(states["v"], *metadata)
+    heading = unbatch(states["h"], *metadata)
 
     results_dict = {
         recording_name: {
@@ -833,6 +830,19 @@ def load_keypoints(
         bodypart. Confidence values are optional and will be set to 1 if not
         present.
 
+    - facemap
+        .h5 files saved by Facemap. See Facemap documentation for details:
+        https://facemap.readthedocs.io/en/latest/outputs.html#keypoints-processing
+        The files should have the format::
+
+            [filename].h5
+            └──Facemap
+                ├──keypoint1
+                │  ├──x
+                │  ├──y
+                │  └──likelihood
+                ⋮
+
     Parameters
     ----------
     filepath_pattern: str or list of str
@@ -890,7 +900,14 @@ def load_keypoints(
         List of bodypart names. The order of the names matches the order of the
         bodyparts in `coordinates` and `confidences`.
     """
-    formats = ["deeplabcut", "sleap", "anipose", "sleap-anipose", "nwb"]
+    formats = [
+        "deeplabcut",
+        "sleap",
+        "anipose",
+        "sleap-anipose",
+        "nwb",
+        "facemap",
+    ]
     assert format in formats, fill(
         f"Unrecognized format {format}. Must be one of {formats}"
     )
@@ -902,6 +919,7 @@ def load_keypoints(
             "anipose": [".csv"],
             "sleap-anipose": [".h5", ".hdf5"],
             "nwb": [".nwb"],
+            "facemap": [".h5", ".hdf5"],
         }[format]
     else:
         extensions = [extension]
@@ -912,6 +930,7 @@ def load_keypoints(
         "anipose": _anipose_loader,
         "sleap-anipose": _sleap_anipose_loader,
         "nwb": _nwb_loader,
+        "facemap": _facemap_loader,
     }[format]
 
     filepaths = list_files_with_exts(
@@ -985,7 +1004,13 @@ def _deeplabcut_loader(filepath, name):
     if ext == ".h5":
         df = pd.read_hdf(filepath)
     if ext == ".csv":
-        df = pd.read_csv(filepath, header=[0, 1, 2], index_col=0)
+        with open(filepath) as f:
+            head = list(islice(f, 0, 5))
+            if "individuals" in head[1]:
+                header = [0, 1, 2, 3]
+            else:
+                header = [0, 1, 2]
+        df = pd.read_csv(filepath, header=header, index_col=0)
 
     coordinates, confidences = {}, {}
     bodyparts = df.columns.get_level_values("bodyparts").unique().tolist()
@@ -1039,13 +1064,23 @@ def _sleap_loader(filepath, name):
 
 def _anipose_loader(filepath, name):
     """Load keypoints from anipose csv files."""
-    df = pd.read_csv(
-        filepath,
-    )
-    bodyparts = [n.split("_x")[0] for n in df.columns[:-1][::5]]
-    arr = df.to_numpy()[:, :-1].reshape(len(df), len(bodyparts), 5)
-    coordinates = {name: arr[:, :, :3]}
-    confidences = {name: arr[:, :, 4]}
+    with open(filepath, "r") as f:
+        header = f.readline()
+
+    pattern = r"(?P<string>\w+)_x,(?P=string)_y,(?P=string)_z"
+    bodyparts = list(re.findall(pattern, header))
+
+    df = pd.read_csv(filepath)
+    coordinates = {
+        name: np.stack(
+            [
+                df[[f"{bp}_x", f"{bp}_y", f"{bp}_z"]].to_numpy()
+                for bp in bodyparts
+            ],
+            axis=1,
+        )
+    }
+    confidences = {name: df[[f"{bp}_score" for bp in bodyparts]].to_numpy()}
     return coordinates, confidences, bodyparts
 
 
@@ -1112,6 +1147,20 @@ def _nwb_loader(filepath, name):
             confs = np.ones_like(coords[..., 0])
         coordinates = {name: coords}
         confidences = {name: confs}
+    return coordinates, confidences, bodyparts
+
+
+def _facemap_loader(filepath, name):
+    """Load keypoints from facemap h5 files."""
+    with h5py.File(filepath, "r") as h5:
+        dset = h5["Facemap"]
+        bodyparts = sorted(dset.keys())
+        coords, confs = [], []
+        for bp in bodyparts:
+            coords.append(np.stack([dset[bp]["x"], dset[bp]["y"]], axis=1))
+            confs.append(dset[bp]["likelihood"])
+        coordinates = {name: np.stack(coords, axis=1)}
+        confidences = {name: np.stack(confs, axis=1)}
     return coordinates, confidences, bodyparts
 
 
