@@ -93,7 +93,7 @@ def generate_index(project_dir, model_name, index_filepath):
         index_df.to_csv(index_filepath, index=False)
 
 
-def interactive_group_setting(project_dir, model_name):
+def interactive_group_setting(project_dir, model_name, index_filename="index.csv"):
     """Start the interactive group setting widget.
 
     Parameters
