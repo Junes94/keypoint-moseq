@@ -2,6 +2,16 @@
 testing
 update_pypi.sh
 
+# Junesu
+*.pdf
+*.csv
+*.gif
+*.p
+*.h5
+*.html
+*.png
+*.mp4
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../../../../anaconda3/envs/keypoint_moseq/lib/site-packages/keypoint_moseq"
+		}
+	],
+	"settings": {}
+}

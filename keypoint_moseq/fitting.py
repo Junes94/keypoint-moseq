@@ -370,6 +370,10 @@ def apply_model(
                 "The `save_results` option requires either a `results_path` "
                 "or the `project_dir` and `model_name` arguments"
             )
+
+            results_folder_path = os.path.join(project_dir, model_name)
+            if not os.path.exists(results_folder_path):
+                os.makedirs(results_folder_path)
             results_path = os.path.join(project_dir, model_name, "results.h5")
 
     model = init_model(
