@@ -104,7 +104,7 @@ def interactive_group_setting(project_dir, model_name, index_filename="index.csv
         the name of the model directory
     """
 
-    index_filepath = os.path.join(project_dir, "index.csv")
+    index_filepath = os.path.join(project_dir, index_filename)
 
     if not os.path.exists(index_filepath):
         generate_index(project_dir, model_name, index_filepath)
@@ -163,7 +163,7 @@ def interactive_group_setting(project_dir, model_name, index_filename="index.csv
     return pn.Row(summary_table, pn.Column(button))
 
 
-def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True):
+def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, index_filename="index.csv"):
     """Compute moseq dataframe from results dict that contains all kinematic
     values by frame.
 
@@ -190,7 +190,7 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True):
     results_dict = load_results(project_dir, model_name)
 
     # load index file
-    index_filepath = os.path.join(project_dir, "index.csv")
+    index_filepath = os.path.join(project_dir, index_filename)
     if os.path.exists(index_filepath):
         index_data = pd.read_csv(index_filepath, index_col=False)
     else:
@@ -291,6 +291,7 @@ def compute_stats_df(
     min_frequency=0.005,
     groupby=["group", "name"],
     fps=30,
+    index_filename="index.csv"
 ):
     """Summary statistics for syllable frequencies and kinematic values.
 
@@ -321,7 +322,7 @@ def compute_stats_df(
 
     # add group information
     # load index file
-    index_filepath = os.path.join(project_dir, "index.csv")
+    index_filepath = os.path.join(project_dir, index_filename)
     if os.path.exists(index_filepath):
         index_df = pd.read_csv(index_filepath, index_col=False)
     else:
@@ -1049,8 +1050,8 @@ def save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir):
         save_dir = os.path.join(project_dir, model_name, "figures")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, plot_name)
-    fig.savefig(save_path + ".png", dpi=300)
-    fig.savefig(save_path + ".pdf", dpi=300)
+    fig.savefig(save_path + ".png", dpi=300, bbox_inches='tight')
+    fig.savefig(save_path + ".pdf", dpi=300, bbox_inches='tight')
     print(f"Saved figure to {save_path}.png")
 
 
@@ -1158,6 +1159,7 @@ def plot_syll_stats_with_sem(
         ax=ax,
         hue_order=groups,
         palette=colors,
+        join = join
     )
 
     # where some data has already been plotted to ax
@@ -1452,7 +1454,7 @@ def visualize_transition_bigram(
 
 
 def generate_transition_matrices(
-    project_dir, model_name, normalize="bigram", min_frequency=0.005
+    project_dir, model_name, normalize="bigram", min_frequency=0.005, index_filename="index.csv"
 ):
     """Generate the transition matrices for each recording.
 
@@ -1470,7 +1472,7 @@ def generate_transition_matrices(
     """
     trans_mats, usages = None, None
     # index file
-    index_file = os.path.join(project_dir, "index.csv")
+    index_file = os.path.join(project_dir, index_filename)
     if not os.path.exists(index_file):
         generate_index(project_dir, model_name, index_file)
 
