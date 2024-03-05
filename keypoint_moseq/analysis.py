@@ -1,28 +1,46 @@
-from keypoint_moseq.util import filter_angle
-from keypoint_moseq.io import load_results
+from textwrap import fill
 from math import ceil
 from matplotlib.lines import Line2D
 from cytoolz import sliding_window
+import tqdm
 import networkx as nx
 import os
+import yaml
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import ipywidgets as widgets
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
+from bokeh.io import output_notebook
+from IPython.display import display
 from scipy import stats
-from statsmodels.stats.multitest import multipletests
+from textwrap import fill
+from statsmodels.stats.multitest import multipletests, fdrcorrection
 from itertools import combinations
 from copy import deepcopy
 from glob import glob
-import panel as pn
-from jax_moseq.utils import get_durations, get_frequencies
 
-pn.extension("plotly", "tabulator")
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import argrelextrema
+
+from keypoint_moseq.widgets import GroupSettingWidgets, SyllableLabeler
+from keypoint_moseq.io import load_results
+from keypoint_moseq.util import (
+    filter_angle,
+    filtered_derivative,
+    permute_cyclic,
+    format_data,
+)
+
+from jax_moseq.utils import get_frequencies, unbatch
+from jax_moseq.models.keypoint_slds import align_egocentric
+
 na = np.newaxis
 
 
 def get_syllable_names(project_dir, model_name, syllable_ixs):
-    """Get syllable names from syll_info.csv file. Labels consist of the
+    """Get syllable names from syll_info.yaml file. Labels consist of the
     syllable index, followed by the syllable label, if it exists.
 
     Parameters
@@ -40,15 +58,13 @@ def get_syllable_names(project_dir, model_name, syllable_ixs):
         list of syllable names
     """
     labels = {ix: f"{ix}" for ix in syllable_ixs}
-    syll_info_path = os.path.join(project_dir, model_name, "syll_info.csv")
+    syll_info_path = os.path.join(project_dir, model_name, "syll_info.yaml")
     if os.path.exists(syll_info_path):
-        syll_info_df = pd.read_csv(syll_info_path, index_col=False).fillna("")
-
-    for ix in syllable_ixs:
-        if len(syll_info_df[syll_info_df.syllable == ix].label.values[0]) > 0:
-            labels[
-                ix
-            ] = f"{ix} ({syll_info_df[syll_info_df.syllable == ix].label.values[0]})"
+        with open(syll_info_path, "r") as f:
+            syll_info = yaml.safe_load(f)
+            for ix in syllable_ixs:
+                if len(syll_info[ix]["label"]) > 0:
+                    labels[ix] = f'{ix} ({syll_info[ix]["label"]})'
     names = [labels[ix] for ix in syllable_ixs]
     return names
 
@@ -109,58 +125,11 @@ def interactive_group_setting(project_dir, model_name, index_filename="index.csv
     if not os.path.exists(index_filepath):
         generate_index(project_dir, model_name, index_filepath)
 
-    # making the interactive dataframe
-    # open index dataframe
-
-    # make a tabulator dataframe
-    summary_data = pd.read_csv(index_filepath, index_col=False)
-
-    titles = {"name": "recording name", "group": "group"}
-
-    editors = {
-        "name": None,
-        "group": {
-            "type": "textarea",
-            "elementAttributes": {
-                "maxlength": "100",
-                "onkeydown": "if(event.keyCode == 13 && !event.shiftKey){this.blur();}",
-            },
-            "selectContents": True,
-            "verticalNavigation": "editor",
-            "shiftEnterSubmit": True,
-        },
-    }
-
-    widths = {"name": 400}
-    base_configuration = {"clipboard": "copy"}
-
-    summary_table = pn.widgets.Tabulator(
-        summary_data,
-        editors=editors,
-        layout="fit_data_table",
-        selectable=1,
-        show_index=False,
-        titles=titles,
-        widths=widths,
-        configuration=base_configuration,
-    )
-    button = pn.widgets.Button(name="Save group info", button_type="primary")
-
-    # call back function to save the index file
-    def save_index(summary_data):
-        # create index file from csv
-        data_to_save = summary_data.copy()
-        # remove newlines
-        data_to_save["group"] = data_to_save["group"].str.strip()
-        data_to_save.to_csv(index_filepath, index=False)
-
-    # button click action
-    def b(event, save=True):
-        save_index(summary_data)
-
-    button.on_click(b)
-
-    return pn.Row(summary_table, pn.Column(button))
+    # display the widget
+    index_grid = GroupSettingWidgets(index_filepath)
+    display(index_grid.clear_button, index_grid.group_set)
+    display(index_grid.qgrid_widget)
+    return index_filepath
 
 
 def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, index_filename="index.csv"):
@@ -192,10 +161,16 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, in
     # load index file
     index_filepath = os.path.join(project_dir, index_filename)
     if os.path.exists(index_filepath):
-        index_data = pd.read_csv(index_filepath, index_col=False)
+        with open(index_filepath, "r") as f:
+            index_data = yaml.safe_load(f)
+
+        # create a file dictionary for each recording
+        file_info = {}
+        for recording in index_data["files"]:
+            file_info[recording["name"]] = {"group": recording["group"]}
     else:
         print(
-            "index.csv not found, if you want to include group information for each video, please run the Assign Groups widget first"
+            "index.yaml not found, if you want to include group information for each video, please run the Assign Groups widget first"
         )
 
     recording_name = []
@@ -222,7 +197,7 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, in
             )
         )
 
-        if index_data is not None:
+        if file_info is not None:
             # find the group for each recording from index data
             s_group.append(
                 [index_data[index_data["name"] == k]["group"].values[0]] * n_frame
@@ -253,15 +228,12 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, in
 
     # construct dataframe
     moseq_df = pd.DataFrame(np.concatenate(recording_name), columns=["name"])
-    column_names = (
-        ["centroid_x", "centroid_y"]
-        if centroid[0].shape[1] == 2
-        else ["centroid_x", "centroid_y", "centroid_z"]
-    )
     moseq_df = pd.concat(
         [
             moseq_df,
-            pd.DataFrame(np.concatenate(centroid), columns=column_names),
+            pd.DataFrame(
+                np.concatenate(centroid), columns=["centroid_x", "centroid_y"]
+            ),
         ],
         axis=1,
     )
@@ -324,21 +296,26 @@ def compute_stats_df(
     # load index file
     index_filepath = os.path.join(project_dir, index_filename)
     if os.path.exists(index_filepath):
-        index_df = pd.read_csv(index_filepath, index_col=False)
+        with open(index_filepath, "r") as f:
+            index_data = yaml.safe_load(f)
+
+        # create a file dictionary for each recording
+        file_info = {}
+        for recording in index_data["files"]:
+            file_info[recording["name"]] = {"group": recording["group"]}
     else:
         print(
-            "index.csv not found, if you want to include group information for each video, please run the Assign Groups widget first"
+            "index.yaml not found, if you want to include group information for each video, please run the Assign Groups widget first"
         )
 
     # construct frequency dataframe
-    # syllable frequencies within one session add up to 1
     frequency_df = []
     for k, v in results_dict.items():
         syll_freq = get_frequencies(v["syllable"])
         df = pd.DataFrame(
             {
                 "name": k,
-                "group": index_df[index_df["name"] == k]["group"].values[0],
+                "group": file_info[k]["group"],
                 "syllable": np.arange(len(syll_freq)),
                 "frequency": syll_freq,
             }
@@ -347,6 +324,9 @@ def compute_stats_df(
     frequency_df = pd.concat(frequency_df)
     if "name" not in groupby:
         frequency_df.drop(columns=["name"], inplace=True)
+    frequency_df = (
+        frequency_df.groupby(groupby + ["syllable"]).mean().reset_index()
+    )
 
     # filter out syllables that are used less than threshold in all recordings
     filtered_df = moseq_df[moseq_df["syllable"].isin(syll_include)].copy()
@@ -421,13 +401,14 @@ def label_syllables(project_dir, model_name, moseq_df):
     model_name : str
         the name of the model directory
     """
+    output_notebook()
 
     # construct the syllable info path
-    syll_info_path = os.path.join(project_dir, model_name, "syll_info.csv")
+    syll_info_path = os.path.join(project_dir, model_name, "syll_info.yaml")
 
-    # generate a new syll_info csv file
+    # generate a new syll_info yaml file
     if not os.path.exists(syll_info_path):
-        # generate the syllable info csv file
+        # generate the syllable info yaml file
         generate_syll_info(project_dir, model_name, syll_info_path)
 
     # ensure there is grid movies
@@ -437,30 +418,16 @@ def label_syllables(project_dir, model_name, moseq_df):
         "https://keypoint-moseq.readthedocs.io/en/latest/modeling.html#visualization"
     )
 
-    # load syll_info
-    syll_info_df = pd.read_csv(syll_info_path, index_col=False).fillna("")
-    # split into with movie and without movie
-    syll_info_df_with_movie = syll_info_df[
-        syll_info_df.movie_path.str.contains(".mp4")
-    ].copy()
-    syll_info_df_without_movie = syll_info_df[
-        ~syll_info_df.movie_path.str.contains(".mp4")
-    ].copy()
+    for movie_path in grid_movies:
+        syll_index = int(os.path.splitext(os.path.basename(movie_path))[0][8:])
+        syll_dict[syll_index]["movie_path"] = movie_path
 
-    # create select widget only include the ones with a movie
-    select = pn.widgets.Select(
-        name="Select", options=sorted(list(syll_info_df_with_movie.syllable))
-    )
+    # write to file
+    with open(syll_info_path, "w") as file:
+        yaml.safe_dump(syll_dict, file, default_flow_style=False)
 
-    # call back function to create video displayer
-    def show_movie(syllable):
-        movie_path = syll_info_df_with_movie[
-            syll_info_df_with_movie.syllable == select.value
-        ].movie_path.values[0]
-        return pn.pane.Video(movie_path, width=500, loop=False)
-
-    # dynamic video displayer
-    ivideo = pn.bind(show_movie, syllable=select)
+    # construct the index path
+    index_path = os.path.join(project_dir, "index.yaml")
 
     # create the labeler dataframe
     # only include the syllable that have grid movies
@@ -977,7 +944,7 @@ def sort_syllables_by_stat(stats_df, stat="frequency"):
         )
 
     # Get sorted ordering
-    ordering = list(ordering)
+    ordering = list(tmp)
 
     # Get order mapping
     relabel_mapping = {o: i for i, o in enumerate(ordering)}
@@ -1177,7 +1144,7 @@ def plot_syll_stats_with_sem(
         plt.scatter(markings, [-0.005] * len(markings), color="r", marker="*")
 
         # manually define a new patch
-        patch = Line2D(
+        patch = mlines.Line2D(
             [],
             [],
             color="red",
@@ -1193,8 +1160,14 @@ def plot_syll_stats_with_sem(
     sns.despine()
 
     # save the figure
-    plot_name = f"{stat}_{order}_stats"
-    save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir)
+    # saving the figure
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+    else:
+        save_dir = os.path.join(project_dir, model_name, "figures")
+        os.makedirs(save_dir, exist_ok=True)
+    fig.savefig(os.path.join(save_dir, f"{stat}_{order}_stats.pdf"))
+    fig.savefig(os.path.join(save_dir, f"{stat}_{order}_stats.png"))
     return fig, legend
 
 
@@ -1476,11 +1449,15 @@ def generate_transition_matrices(
     if not os.path.exists(index_file):
         generate_index(project_dir, model_name, index_file)
 
-    index_data = pd.read_csv(index_file, index_col=False)
-
-    label_group = list(index_data.group.values)
-    recordings = list(index_data.name.values)
-    group = sorted(list(index_data.group.unique()))
+    with open(index_file, "r") as f:
+        index_data = yaml.safe_load(f)
+    label_group = [
+        recording_info["group"] for recording_info in index_data["files"]
+    ]
+    recordings = [
+        recording_info["name"] for recording_info in index_data["files"]
+    ]
+    group = sorted(list(set(label_group)))
     print("Group(s):", ", ".join(group))
 
     # load model reuslts
@@ -1583,10 +1560,15 @@ def plot_transition_graph_group(
     # turn off the axis spines
     for sub_ax in ax:
         sub_ax.axis("off")
-
-    # save the figure
-    plot_name = "transition_graphs"
-    save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir)
+    # saving the figures
+    # saving the figure
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+    else:
+        save_dir = os.path.join(project_dir, model_name, "figures")
+        os.makedirs(save_dir, exist_ok=True)
+    fig.savefig(os.path.join(save_dir, "transition_graphs.pdf"))
+    fig.savefig(os.path.join(save_dir, "transition_graphs.png"))
 
 
 def plot_transition_graph_difference(
@@ -1652,8 +1634,7 @@ def plot_transition_graph_difference(
         if layout == "circular":
             pos = nx.circular_layout(G)
         else:
-            G_for_spring = nx.from_numpy_array(np.mean(trans_mats, axis=0))
-            pos = nx.spring_layout(G_for_spring, iterations=500)
+            pos = nx.spring_layout(G)
 
         nodelist = G.nodes()
         widths = nx.get_edge_attributes(G, "weight")
@@ -1714,7 +1695,247 @@ def plot_transition_graph_difference(
         ),
     ]
     plt.legend(handles=legend_elements, loc="upper left", borderaxespad=0)
+    # saving the figures
+    # saving the figure
 
-    # save the figure
-    plot_name = "transition_graphs_diff"
-    save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir)
+    if save_dir is None:
+        save_dir = os.path.join(project_dir, model_name, "figures")
+    os.makedirs(save_dir, exist_ok=True)
+    fig.savefig(os.path.join(save_dir, "transition_graphs_diff.pdf"))
+    fig.savefig(os.path.join(save_dir, "transition_graphs_diff.png"))
+
+
+def changepoint_analysis(
+    coordinates,
+    *,
+    anterior_bodyparts,
+    posterior_bodyparts,
+    bodyparts=None,
+    use_bodyparts=None,
+    alpha=0.1,
+    derivative_ksize=3,
+    gaussian_ksize=1,
+    num_thresholds=20,
+    verbose=True,
+    **kwargs,
+):
+    """Find changepoints in keypoint data.
+
+    Changepoints are peaks in a change score that is computed by:
+
+        1. Differentiating (egocentrically aligned) keypoint coordinates
+        2. Z-scoring the absolute values of each derivative
+        3. Counting the number keypoint-coordinate pairs where the
+           Z-score crosses a threshold (in each frame).
+        4. Computing a p-value for the number of threshold-crossings
+           using a temporally shuffled null distribution
+        5. Smoothing the resulting significance score across time
+
+    Steps (3-5) are performed for a range of threshold values, and
+    the final outputs are based on the threshold that yields the
+    highest changepoint frequency.
+
+    Parameters
+    ----------
+    coordinates : dict
+        Keypoint observations as a dictionary mapping recording names to
+        ndarrays of shape (num_frames, num_keypoints, dim)
+
+    anterior_bodyparts : iterable of str or int
+        Anterior keypoints for egocentric alignment, either as indices
+        or as strings if ``bodyparts`` is provided.
+
+    posterior_bodyparts : iterable of str or int
+        Posterior keypoints for egocentric alignment, either as indices
+        or as strings if ``bodyparts`` is provided.
+
+    bodyparts : iterable of str, optional
+        Names of keypoints. Required for subsetting keypoints using
+        ``use_bodyparts`` or if ``anterior_bodyparts`` and
+        ``posterior_bodyparts`` are specified as strings.
+
+    use_bodyparts : iterable of str, optional
+        Subset of keypoints to use for changepoint analysis. If not
+        provided, all keypoints are used.
+
+    alpha : float, default=0.1
+        False-discovery rate for statistical significance testing. Only
+         changepoints with ``p < alpha`` are considered significant.
+
+    derivative_ksize : int, default=3
+        Size of the kernel used to differentiate keypoint coordinates.
+        For example if ``derivative_ksize=3``, the derivative would be
+
+        .. math::
+
+            \dot{y_t} = \frac{1}{3}( x_{t+3}+x_{t+2}+x_{t+1}-x_{t-1}-x_{t-2}-x_{t-3})
+
+    gaussian_ksize : int, default=1
+        Size of the kernel used to smooth the change score.
+
+    num_thresholds : int, default=20
+        Number of thresholds to test.
+
+    verbose : bool, default=True
+        Print progress messages.
+
+    Returns
+    -------
+    changepoints : dict
+        Changepoints as a dictionary with the same keys as ``coordinates``.
+
+    changescores : dict
+        Change scores as a dictionary with the same keys as ``coordinates``.
+
+    coordinates_ego: dict
+        Keypoints in egocentric coordinates, in the same format as
+        ``coordinates``.
+
+    derivatives : dict
+        Z-scored absolute values of the derivatives for each egocentic
+        keypoint coordinate, in the same format as ``coordinates``
+
+    threshold: float
+        Threshold used to binarize Z-scored derivatives.
+    """
+    if use_bodyparts is None and bodyparts is not None:
+        use_bodyparts = bodyparts
+
+    if isinstance(anterior_bodyparts[0], str):
+        assert use_bodyparts is not None, fill(
+            "Must provide `bodyparts` or `use_bodyparts` if `anterior_bodyparts` is a list of strings"
+        )
+        anterior_idxs = [use_bodyparts.index(bp) for bp in anterior_bodyparts]
+    else:
+        anterior_idxs = anterior_bodyparts
+
+    if isinstance(posterior_bodyparts[0], str):
+        assert use_bodyparts is not None, fill(
+            "Must provide `bodyparts` or `use_bodyparts` if `posterior_bodyparts` is a list of strings"
+        )
+        posterior_idxs = [
+            use_bodyparts.index(bp) for bp in posterior_bodyparts
+        ]
+    else:
+        posterior_idxs = posterior_bodyparts
+
+    # Differentiating (egocentrically aligned) keypoint coordinates
+    if verbose:
+        print("Aligning keypoints")
+    data, metadata = format_data(
+        coordinates, bodyparts=bodyparts, use_bodyparts=use_bodyparts
+    )
+    Y_ego, _, _ = align_egocentric(data["Y"], anterior_idxs, posterior_idxs)
+    Y_flat = np.array(Y_ego).reshape(*Y_ego.shape[:2], -1)
+
+    if verbose:
+        print("Differentiating and z-scoring")
+    dy = np.abs(filtered_derivative(Y_flat, derivative_ksize, axis=1))
+    mask = np.broadcast_to(np.array(data["mask"])[:, :, na], dy.shape) > 0
+    means = (dy * mask).sum(1) / mask.sum(1)
+    dy_centered = dy - means[:, na, :]
+    stds = np.sqrt((dy_centered**2 * mask).sum(1) / mask.sum(1))
+    dy_zscored = dy_centered / (stds[:, na, :] + 1e-8)
+
+    # Count threshold crossings
+    thresholds = np.linspace(
+        np.percentile(dy_zscored, 1),
+        np.percentile(dy_zscored, 99),
+        num_thresholds,
+    )
+
+    def get_changepoints(score, pvals, alpha):
+        pts = argrelextrema(score, np.greater, order=1)[0]
+        return pts[pvals[pts] < alpha]
+
+    # get changescores for each threshold
+    all_changescores, all_changepoints = [], []
+    for threshold in tqdm.tqdm(
+        thresholds,
+        disable=(not verbose),
+        desc="Testing thresholds",
+        ncols=72,
+    ):
+        # permute within-recording then combine across recordings
+        crossings = (dy_zscored > threshold).sum(2)[mask[:, :, 0]]
+        crossings_shuff = permute_cyclic(
+            dy_zscored > threshold, mask, axis=1
+        ).sum(2)[mask[:, :, 0]]
+        crossings_shuff = crossings_shuff + np.random.uniform(
+            -0.1, 0.1, crossings_shuff.shape
+        )
+
+        # get significance score
+        ps_combined = 1 - (
+            np.sort(crossings_shuff).searchsorted(crossings) - 1
+        ) / len(crossings)
+        ps_combined = fdrcorrection(ps_combined, alpha=alpha)[1]
+
+        # separate back into recordings
+        pvals = np.zeros(mask[:, :, 0].shape)
+        pvals[mask[:, :, 0]] = ps_combined
+        pvals = unbatch(pvals, *metadata)
+
+        changescores = {
+            k: gaussian_filter1d(-np.log10(ps), gaussian_ksize)
+            for k, ps in pvals.items()
+        }
+        changepoints = {
+            k: get_changepoints(changescores[k], ps, alpha)
+            for k, ps in pvals.items()
+        }
+        all_changescores.append(changescores)
+        all_changepoints.append(changepoints)
+
+    # pick threshold with most changepoints
+    num_changepoints = [sum(map(len, d.values())) for d in all_changepoints]
+    changescores = all_changescores[np.argmax(num_changepoints)]
+    changepoints = all_changepoints[np.argmax(num_changepoints)]
+    threshold = thresholds[np.argmax(num_changepoints)]
+
+    coordinates_ego = unbatch(np.array(Y_ego), *metadata)
+    derivatives = unbatch(dy_zscored.reshape(Y_ego.shape), *metadata)
+    return changepoints, changescores, coordinates_ego, derivatives, threshold
+
+
+def generate_index(project_dir, model_name, index_filepath):
+    """Generate index file.
+
+    Parameters
+    ----------
+    project_dir : str
+        path to project directory
+    model_name : str
+        model directory name
+    index_filepath : str
+        path to index file
+    """
+    # generate a new index file
+    results_dict = load_results(project_dir, model_name)
+    files = []
+    for recording in results_dict.keys():
+        file_dict = {"name": recording, "group": "default"}
+        files.append(file_dict)
+
+    index_data = {"files": files}
+    # write to file and progress_paths
+    with open(index_filepath, "w") as f:
+        yaml.safe_dump(index_data, f, default_flow_style=False)
+
+
+def generate_syll_info(project_dir, model_name, syll_info_path):
+    # parse model results
+    model_results = load_results(project_dir, model_name)
+    unique_sylls = np.unique(
+        np.concatenate([file["syllable"] for file in model_results.values()])
+    )
+    # construct the syllable dictionary
+    syll_dict = {
+        int(i): {"label": "", "desc": "", "movie_path": None, "group_info": {}}
+        for i in unique_sylls
+    }
+
+    # write to file
+    print(syll_info_path)
+    with open(syll_info_path, "w") as file:
+        yaml.safe_dump(syll_dict, file, default_flow_style=False)
