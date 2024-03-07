@@ -673,6 +673,39 @@ def load_results(project_dir=None, model_name=None, path=None):
     return load_hdf5(path)
 
 
+def load_results_subtle(project_dir, model_name):
+    """
+    Load the subclusters.csv files from the specified model directory and return the results as a dictionary.
+
+    Parameters:
+    project_dir (str): The directory containing the model directories.
+    model_name (str): The name of the model directory.
+
+    Returns:
+    results_dict: A dictionary containing the subclusters data for each recording.
+    """
+    results_dict = {}
+    
+    model_dir = os.path.join(project_dir, model_name)
+    
+    # traverse all directories within the model directory (i.e., recording_names)
+    for recording_name in os.listdir(model_dir):
+        recording_path = os.path.join(model_dir, recording_name)
+        
+        # Verify that the current path is a directory
+        if os.path.isdir(recording_path):
+            subclusters_file = os.path.join(recording_path, 'subclusters.csv')
+            
+            # Verify that the subclusters.csv file exists
+            if os.path.isfile(subclusters_file):
+                subclusters_data = pd.read_csv(subclusters_file, header=None)
+                subclusters_array = subclusters_data.values.flatten()   # convert to 1D array (same with kp-moseq format)
+                
+                results_dict[recording_name] = {'syllable': subclusters_array}
+    
+    return results_dict
+
+
 def save_results_as_csv(
     results, project_dir=None, model_name=None, save_dir=None, path_sep="-"
 ):

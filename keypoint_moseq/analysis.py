@@ -1,5 +1,5 @@
 from keypoint_moseq.util import filter_angle
-from keypoint_moseq.io import load_results
+from keypoint_moseq.io import load_results, load_results_subtle
 from math import ceil
 from matplotlib.lines import Line2D
 from cytoolz import sliding_window
@@ -941,7 +941,7 @@ def sort_syllables_by_stat_difference(
     return list(ordering)
 
 
-def sort_syllables_by_stat(stats_df, stat="frequency"):
+def sort_syllables_by_stat(stats_df, stat="frequency", SUBTLE=False):
     """Sort sylllabes by the stat and return the ordering and label mapping.
 
     Parameters
@@ -950,6 +950,7 @@ def sort_syllables_by_stat(stats_df, stat="frequency"):
         the stats dataframe that contains kinematic data and the syllable label for each recording and each syllable
     stat : str, optional
         the statistic to sort on, by default 'frequency'
+    SUBTLE : bool, optional (default: False). Whether to use the 'SUBTLE' dataset.
 
     Returns
     -------
@@ -963,7 +964,12 @@ def sort_syllables_by_stat(stats_df, stat="frequency"):
     # mean frequency by syllable don't always refect the ordering from reindexing
     # use the syllable label as ordering instead
     if stat == "frequency":
-        ordering = sorted(stats_df.syllable.unique())
+        if SUBTLE is True:
+            frequency_by_syllable = stats_df.groupby('syllable')[stat].mean().reset_index()  # Calculate the average frequency of each syllable
+            frequency_by_syllable_sorted = frequency_by_syllable.sort_values(by=stat, ascending=False)      # Sort the syllables by frequency
+            ordering = frequency_by_syllable_sorted['syllable'].tolist()
+        else:
+            ordering = sorted(stats_df.syllable.unique())
     else:
         ordering = (
             stats_df.drop(
@@ -994,6 +1000,7 @@ def _validate_and_order_syll_stats_params(
     exp_group=None,
     colors=None,
     figsize=(10, 5),
+    SUBTLE=False,
 ):
     if not isinstance(figsize, (tuple, list)):
         print(
@@ -1019,7 +1026,7 @@ def _validate_and_order_syll_stats_params(
         )
 
     if order == "stat":
-        ordering, _ = sort_syllables_by_stat(complete_df, stat=stat)
+        ordering, _ = sort_syllables_by_stat(complete_df, stat=stat, SUBTLE=SUBTLE)
     elif order == "diff":
         if (
             ctrl_group is None
@@ -1070,6 +1077,7 @@ def plot_syll_stats_with_sem(
     colors=None,
     join=False,
     figsize=(8, 4),
+    SUBTLE=False,
 ):
     """Plot syllable statistics with standard error of the mean.
 
@@ -1103,6 +1111,7 @@ def plot_syll_stats_with_sem(
         whether to join the points with a line, by default False
     figsize : tuple, optional
         the figure size, by default (8, 4)
+    SUBTLE : bool, optional (default: False). Whether to use the 'SUBTLE' dataset.
 
     Returns
     -------
@@ -1143,6 +1152,7 @@ def plot_syll_stats_with_sem(
         exp_group=exp_group,
         colors=colors,
         figsize=figsize,
+        SUBTLE=SUBTLE,
     )
 
     fig, ax = plt.subplots(1, 1, figsize=figsize)
@@ -1454,7 +1464,7 @@ def visualize_transition_bigram(
 
 
 def generate_transition_matrices(
-    project_dir, model_name, normalize="bigram", min_frequency=0.005, index_filename="index.csv"
+    project_dir, model_name, normalize="bigram", min_frequency=0.005, index_filename="index.csv", SUBTLE=False
 ):
     """Generate the transition matrices for each recording.
 
@@ -1484,7 +1494,10 @@ def generate_transition_matrices(
     print("Group(s):", ", ".join(group))
 
     # load model reuslts
-    results_dict = load_results(project_dir, model_name)
+    if SUBTLE is True:
+        results_dict = load_results_subtle(project_dir, model_name)
+    else:
+        results_dict = load_results(project_dir, model_name)
 
     # filter out syllables by freqency
     model_labels = [results_dict[recording]["syllable"] for recording in recordings]
