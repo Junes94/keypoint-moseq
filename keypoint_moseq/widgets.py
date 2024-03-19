@@ -3,7 +3,7 @@ pipeline."""
 
 # group setting widget imports
 import os
-import qgrid
+# import qgrid
 import pandas as pd
 import yaml
 import ipywidgets as widgets
@@ -123,18 +123,18 @@ class GroupSettingWidgets:
             [self.group_input, self.save_button, self.update_index_button]
         )
 
-        self.index_dict, self.df = self.index_to_dataframe(self.index_filepath)
-        self.qgrid_widget = qgrid.show_grid(
-            self.df[["group", "name"]],
-            column_options=self.col_opts,
-            column_definitions=self.col_defs,
-            show_toolbar=False,
-        )
+        # self.index_dict, self.df = self.index_to_dataframe(self.index_filepath)
+        # self.qgrid_widget = qgrid.show_grid(
+        #     self.df[["group", "name"]],
+        #     column_options=self.col_opts,
+        #     column_definitions=self.col_defs,
+        #     show_toolbar=False,
+        # )
 
-        qgrid.set_grid_option("forceFitColumns", False)
-        qgrid.set_grid_option("enableColumnReorder", True)
-        qgrid.set_grid_option("highlightSelectedRow", True)
-        qgrid.set_grid_option("highlightSelectedCell", False)
+        # qgrid.set_grid_option("forceFitColumns", False)
+        # qgrid.set_grid_option("enableColumnReorder", True)
+        # qgrid.set_grid_option("highlightSelectedRow", True)
+        # qgrid.set_grid_option("highlightSelectedCell", False)
 
         # Add callback functions
         self.clear_button.on_click(self.clear_clicked)
