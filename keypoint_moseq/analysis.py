@@ -1463,6 +1463,51 @@ def visualize_transition_bigram(
     save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir)
 
 
+def visualize_save_each_transition_bigram(
+    project_dir,
+    model_name,
+    groups,
+    trans_mats,
+    syll_include,
+    save_dir=None,
+    normalize="bigram",
+    figsize=(6, 6),
+    show_syllable_names=True,
+    ):
+    """Save each group's transition matrix in a separate figure file.
+
+    Parameters:
+    - project_dir: Project directory.
+    - model_name: Model name.
+    - groups: List of groups to visualize.
+    - trans_mats: List of transition matrices corresponding to each group.
+    - syll_include: List of syllable indexes to include.
+    - save_dir: Directory to save the figures.
+    - normalize: Normalization method.
+    - figsize: Size for the figure.
+    - show_syllable_names: Whether to show syllable names.
+    """
+    for i, group in enumerate(groups):
+        fig, ax = plt.subplots(figsize=figsize)
+        mat = trans_mats[i]
+        syll_names = get_syllable_names(project_dir, model_name, syll_include) if show_syllable_names else [str(ix) for ix in syll_include]
+        im = ax.imshow(mat, cmap="cubehelix", aspect='equal')  # Use 'equal' to ensure square cells
+        ax.set_title(f"Group: {group}")
+        ax.set_xticks(range(len(syll_names)))
+        ax.set_xticklabels(syll_names, rotation=90)
+        ax.set_yticks(range(len(syll_names)))
+        ax.set_yticklabels(syll_names)
+        ax.set_xlabel("Outgoing syllable")
+        ax.set_ylabel("Incoming syllable")
+        cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cb.set_label(f"{normalize.title()} Transition Probability")
+        plt.tight_layout()
+
+        # save the figure
+        plot_name = f"transition_matrix_{group}"
+        save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir)
+
+
 def generate_transition_matrices(
     project_dir, model_name, normalize="bigram", min_frequency=0.005, index_filename="index.csv", SUBTLE=False
 ):
