@@ -16,6 +16,7 @@ from copy import deepcopy
 from glob import glob
 import panel as pn
 from jax_moseq.utils import get_durations, get_frequencies
+from scipy.stats import permutation_test
 
 pn.extension("plotly", "tabulator")
 na = np.newaxis
@@ -1776,3 +1777,159 @@ def plot_transition_graph_difference(
     # save the figure
     plot_name = "transition_graphs_diff"
     save_analysis_figure(fig, plot_name, project_dir, model_name, save_dir)
+
+
+def select_groups(project_dir, model_name, index_data, min_frequency, selected_groups=None):
+    """
+    Select syllables with a transition probability greater than min_frequency in all groups stored in selected_groups.
+
+    Parameters:
+    - project_dir (str): Path to the project directory.
+    - model_name (str): Name of the model.
+    - index_data (pd.DataFrame): DataFrame containing the index data.
+    - min_frequency (float): Minimum frequency threshold for syllable selection.
+    - selected_groups (list, optional): List of selected groups. If None, all unique groups in index_data are used.
+
+    Returns:
+    - label_group (list): List of group labels for each recording.
+    - recordings (list): List of recording names.
+    - syll_include (np.ndarray): Array of selected syllable indices.
+    - max_syllable (int): Maximum syllable index + 1.
+    """
+    if selected_groups is None:
+        selected_groups = sorted(list(set(index_data['group'])))
+        
+    results_dict = load_results(project_dir, model_name)
+    selected_data = index_data[index_data['group'].isin(selected_groups)]
+    label_group = list(selected_data.group.values)
+    recordings = list(selected_data.name.values)
+
+    all_labels = [results_dict[recording]["syllable"] for recording in recordings]
+    all_frequencies = get_frequencies(all_labels)
+    
+    # Selecting syllables higher than min_frequency
+    syll_include = np.where(all_frequencies > min_frequency)[0]
+    max_syllable = np.max(syll_include) + 1
+
+    return label_group, recordings, syll_include, max_syllable
+
+
+def get_individual_trans_mats(project_dir, model_name, index_data, selected_groups=None, normalize='bigram', min_frequency=0.005):
+    """
+    Get individual transition matrices for each recording.
+
+    Parameters:
+    - project_dir (str): Path to the project directory.
+    - model_name (str): Name of the model.
+    - index_data (pd.DataFrame): DataFrame containing the index data.
+    - selected_groups (list, optional): List of selected groups. If None, all unique groups in index_data are used.
+    - normalize (str, optional): Normalization method for the transition matrices. Default is 'bigram'.
+    - min_frequency (float, optional): Minimum frequency threshold for syllable selection. Default is 0.005.
+
+    Returns:
+    - individual_tps (list): List of individual transition matrices.
+    - label_group (list): List of group labels for each recording.
+    - recordings (list): List of recording names.
+    - syll_include (np.ndarray): Array of selected syllable indices.
+    """
+    
+    results_dict = load_results(project_dir, model_name)
+    
+    if selected_groups is None:
+        selected_groups = sorted(list(set(index_data['group'])))
+    
+    label_group, recordings, syll_include, max_syllable = select_groups(project_dir, model_name, index_data, min_frequency=min_frequency, selected_groups=selected_groups)
+
+    individual_tps = []
+    for recording in recordings:
+        labels = results_dict[recording]["syllable"]
+        tp = get_transition_matrix([labels], normalize=normalize, combine=True, max_syllable=max_syllable)
+        individual_tps.append(tp[syll_include, :][:, syll_include])
+    
+    return individual_tps, label_group, recordings, syll_include
+
+
+def get_group_trans_mats_from_individual(project_dir, model_name, index_data, selected_groups=None, normalize='bigram', min_frequency=0.005, normalize_individual_tp='bigram'):
+    """
+    Get group transition matrices by averaging individual transition matrices.
+
+    Parameters:
+    - project_dir (str): Path to the project directory.
+    - model_name (str): Name of the model.
+    - index_data (pd.DataFrame): DataFrame containing the index data.
+    - selected_groups (list, optional): List of selected groups. If None, all unique groups in index_data are used.
+    - normalize (str, optional): Normalization method for the group transition matrices. Default is 'bigram'.
+    - min_frequency (float, optional): Minimum frequency threshold for syllable selection. Default is 0.005.
+    - normalize_individual_tp (str, optional): Normalization method for the individual transition matrices. Default is 'bigram'.
+
+    Returns:
+    - group_tps (list): list of group transition matrices (order is same with that of select_groups).
+    - individual_tps (list): List of individual transition matrices.
+    - label_group (list): List of group labels for each recording.
+    - recordings (list): List of recording names.
+    - syll_include (np.ndarray): Array of selected syllable indices.
+    """
+
+    if selected_groups is None:
+        selected_groups = sorted(list(set(index_data['group'])))
+    individual_tps, label_group, recordings, syll_include = get_individual_trans_mats(project_dir, model_name, index_data, selected_groups=selected_groups, normalize=normalize_individual_tp, min_frequency=min_frequency)
+    
+    group_tps = []
+    for group in selected_groups:
+        group_indices = [i for i, g in enumerate(label_group) if g == group]
+        group_tp = np.mean([individual_tps[i] for i in group_indices], axis=0)
+        group_tp = normalize_transition_matrix(group_tp, normalize)
+        group_tps.append(group_tp)
+    return group_tps, individual_tps, label_group, recordings, syll_include, selected_groups
+
+
+def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps, label_group, syll_include, selected_groups, n_resamples=2000, threshold=0.05):
+    """
+    Run permutation test to compare transition probabilities between two groups.
+
+    Parameters:
+    - group_tps (list): list of group transition matrices (order is same with that of select_groups).
+    - individual_tps (list): List of individual transition matrices.
+    - label_group (list): List of group labels for each recording.
+    - syll_include (np.ndarray): Array of selected syllable indices.
+    - select_groups (list): Name of the first group.
+    - n_resamples (int, optional): Number of resamples for the permutation test. Default is 2000.
+    - threshold (float, optional): Significance threshold for the permutation test. Default is 0.05.
+
+    Returns:
+    - result_df (pd.DataFrame): DataFrame containing the permutation test results.
+    """
+    group1 = selected_groups[0]
+    group2 = selected_groups[1]
+    tp_diff = group_tps[0] - group_tps[1]
+
+    def permutation_test_func(x, y):
+        return np.mean(x) - np.mean(y)
+
+    p_values = np.zeros_like(tp_diff)
+    for i, j in np.ndindex(tp_diff.shape):
+        group1_values = [individual_tps[k][i, j] for k, g in enumerate(label_group) if g == group1]
+        group2_values = [individual_tps[k][i, j] for k, g in enumerate(label_group) if g == group2]
+        res = permutation_test((group1_values, group2_values), permutation_test_func, n_resamples=n_resamples, alternative='two-sided')
+        p_values[i, j] = res.pvalue
+
+    significant_mask = p_values < threshold
+    result_data = []
+    for i, j in np.ndindex(tp_diff.shape):
+        significance = int(significant_mask[i, j])
+        result_data.append([syll_include[i], syll_include[j], tp_diff[i, j], p_values[i, j], significance])
+
+    result_df = pd.DataFrame(result_data, columns=["From", "To", "TP_Diff", "P_Value", "Significance"])
+
+    significant_transitions = np.argwhere(significant_mask)
+    print(f"Significant transitions between {group1} and {group2} (without correction):")
+    print("\n".join([f"Syllable {syll_include[i]} -> Syllable {syll_include[j]}" for i, j in significant_transitions]))
+
+    # save results
+    result_dir = os.path.join(project_dir, model_name, f"Transition_{selected_groups[0]}_vs_{selected_groups[1]}")
+    # if there's no such directory, create one
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir, exist_ok=True)
+
+    result_df.to_csv(os.path.join(result_dir, "transition_results.csv"), index=False)
+    return result_df
