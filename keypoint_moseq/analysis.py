@@ -1870,17 +1870,26 @@ def get_group_trans_mats_from_individual(project_dir, model_name, index_data, se
     - syll_include (np.ndarray): Array of selected syllable indices.
     """
 
+    results_dict = load_results(project_dir, model_name)
+
     if selected_groups is None:
         selected_groups = sorted(list(set(index_data['group'])))
     individual_tps, label_group, recordings, syll_include = get_individual_trans_mats(project_dir, model_name, index_data, selected_groups=selected_groups, normalize=normalize_individual_tp, min_frequency=min_frequency)
     
     group_tps = []
+    usages = []
     for group in selected_groups:
         group_indices = [i for i, g in enumerate(label_group) if g == group]
+        group_labels = [results_dict[recordings[i]]["syllable"] for i in group_indices]
+
         group_tp = np.mean([individual_tps[i] for i in group_indices], axis=0)
         group_tp = normalize_transition_matrix(group_tp, normalize)
         group_tps.append(group_tp)
-    return group_tps, individual_tps, label_group, recordings, syll_include, selected_groups
+
+        group_usages = get_frequencies(group_labels)[syll_include]
+        usages.append(group_usages)
+
+    return group_tps, usages, individual_tps, label_group, recordings, syll_include, selected_groups
 
 
 def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps, label_group, syll_include, selected_groups, n_resamples=2000, threshold=0.05):
@@ -1926,10 +1935,83 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
     print("\n".join([f"Syllable {syll_include[i]} -> Syllable {syll_include[j]}" for i, j in significant_transitions]))
 
     # save results
-    result_dir = os.path.join(project_dir, model_name, f"Transition_{selected_groups[0]}_vs_{selected_groups[1]}")
-    # if there's no such directory, create one
-    if not os.path.exists(result_dir):
-        os.makedirs(result_dir, exist_ok=True)
+    result_dir = os.path.join(project_dir, model_name)
 
-    result_df.to_csv(os.path.join(result_dir, "transition_results.csv"), index=False)
+    result_df.to_csv(os.path.join(result_dir, f"Transition_results_{selected_groups[0]}_vs_{selected_groups[1]}.csv"), index=False)
     return result_df
+
+
+def plot_significant_transition_graph(project_dir, model_name, group1, group2, results_df, syll_include, usages, layout='circular', node_scaling=2000, show_syllable_names=False):
+    """
+    Plot the transition graph for syllables with significant differences between two groups.
+
+    Parameters:
+    - project_dir (str): Path to the project directory.
+    - model_name (str): Name of the model.
+    - group1 (str): Name of the first group.
+    - group2 (str): Name of the second group.
+    - results_df (pd.DataFrame): DataFrame containing the permutation test results.
+    - syll_include (np.ndarray): Array of selected syllable indices.
+    - usages (list): List of syllable usages for each group.
+    - layout (str, optional): Layout of the graph, by default 'circular'.
+    - node_scaling (int, optional): Scaling factor for the node size, by default 2000.
+    - show_syllable_names (bool, optional): Whether to show syllable names or indices, by default False.
+    """
+    significant_transitions = results_df[results_df['Significance'] == 1]
+    
+    if show_syllable_names:
+        syll_names = get_syllable_names(project_dir, model_name, syll_include)
+    else:
+        syll_names = [str(ix) for ix in syll_include]
+    
+    G = nx.DiGraph()
+    
+    # Add nodes for all syllables in syll_include
+    for syll in syll_include:
+        G.add_node(syll_names[np.where(syll_include == syll)[0][0]])
+    
+    # Add edges for significant transitions
+    for _, row in significant_transitions.iterrows():
+        from_syll, to_syll, tp_diff = int(row['From']), int(row['To']), row['TP_Diff']
+        if from_syll in syll_include and to_syll in syll_include:
+            from_idx = np.where(syll_include == from_syll)[0][0]
+            to_idx = np.where(syll_include == to_syll)[0][0]
+            G.add_edge(syll_names[from_idx], syll_names[to_idx], weight=abs(tp_diff), color='red' if tp_diff > 0 else 'blue')
+    
+    pos = nx.circular_layout(G, scale=2) if layout == 'circular' else nx.spring_layout(G)
+    
+    # Calculate node colors based on up/down-regulation
+    node_colors = []
+    for syll in syll_include:
+        idx = np.where(syll_include == syll)[0][0]
+        if usages[0][idx] > usages[1][idx]:
+            node_colors.append('lightcoral')
+        elif usages[0][idx] < usages[1][idx]:
+            node_colors.append('lightblue')
+        else:
+            node_colors.append('white')
+    
+    edge_colors = [G[u][v]['color'] for u, v in G.edges()]
+    edge_widths = [G[u][v]['weight'] * node_scaling for u, v in G.edges()]
+    
+    plt.figure(figsize=(10, 10))
+    nx.draw_networkx_nodes(G, pos, node_size=600, node_color=node_colors, edgecolors='black')
+    nx.draw_networkx_edges(G, pos, edge_color=edge_colors, width=edge_widths, alpha=0.7, arrows=True, arrowsize=20, connectionstyle='arc3,rad=-0.2')
+    nx.draw_networkx_labels(G, pos, font_size=12, font_family='sans-serif')
+    #nx.draw_networkx_edge_labels(G, pos, edge_labels={(u, v): f"{u} -> {v}" for u, v in G.edges()}, font_size=10, rotate=False, verticalalignment='center')
+    
+    plt.axis('off')
+    plt.title(f"Significant Transitions between {group1} and {group2}")
+    
+    # Add legend
+    red_patch = plt.Line2D([], [], color='red', label=f'Up-regulated in {group1}')
+    blue_patch = plt.Line2D([], [], color='blue', label=f'Up-regulated in {group2}')
+    lightcoral_patch = plt.Line2D([], [], marker='o', color='white', label=f'Up-regulated usage in {group1}', markerfacecolor='lightcoral', markersize=10)
+    lightblue_patch = plt.Line2D([], [], marker='o', color='white', label=f'Up-regulated usage in {group2}', markerfacecolor='lightblue', markersize=10)
+    plt.legend(handles=[red_patch, blue_patch, lightcoral_patch, lightblue_patch], loc='best')
+    
+    # Save the graph
+    save_dir = os.path.join(project_dir, model_name,'figures')
+    os.makedirs(save_dir, exist_ok=True)
+    plt.savefig(os.path.join(save_dir, f"significant_transition_graph_{group1}_vs_{group2}.png"), dpi=300, bbox_inches='tight')
+    plt.show()
