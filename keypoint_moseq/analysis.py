@@ -1210,6 +1210,10 @@ def plot_syll_stats_with_sem(
                     print("No significant syllables found.")
         else:
             markings = []
+            # y축 범위 확인
+            y_min, _ = ax.get_ylim()
+            # marker의 y 좌표를 y_min에 가까운 값으로 설정 (예: y_min - (y_max - y_min) * 0.05)
+            marker_y = y_min - 0.05
             for s in sig_sylls:
                 if s in ordering:
                     markings.append(np.where(ordering == s)[0])
@@ -1217,7 +1221,7 @@ def plot_syll_stats_with_sem(
                     continue
             if len(markings) > 0:
                 markings = np.concatenate(markings)
-                plt.scatter(markings, [-0.05] * len(markings), color="r", marker="*")
+                plt.scatter(markings, [marker_y] * len(markings), color="r", marker="*")
             else:
                 print("No significant syllables found.")
 
