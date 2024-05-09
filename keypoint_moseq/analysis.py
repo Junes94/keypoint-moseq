@@ -823,7 +823,7 @@ def run_kruskal(
     cum_group_idx = np.insert(np.cumsum(n_per_group), 0, 0)
     num_groups = len(group_names)
 
-    # get all syllable usage data
+    # get all syllable usage data (df_only_stats의 열은 syllable_data의 열과 같음. 각각 syllable을 의미함)
     df_only_stats = grouped_data.drop(["group", "name"], axis=1)
     syllable_data = grouped_data.drop(["group", "name"], axis=1).values
 
@@ -839,7 +839,7 @@ def run_kruskal(
         seed=seed,
     )
 
-    # find the real k_real
+    # find the real k_real (df_k_real의 행은 syllable_data의 열과 같음)
     df_k_real = pd.DataFrame(
         [
             stats.kruskal(
@@ -889,9 +889,12 @@ def run_kruskal(
     # Get intersecting significant syllables between
     intersect_sig_syllables = {}
     for pair in df_pair_corrected_pvalues.columns.tolist():
-        intersect_sig_syllables[pair] = np.where(
-            (df_pair_corrected_pvalues[pair] < thresh) & (df_k_real.is_sig)
-        )[0]
+        # intersect_sig_syllables[pair] = np.where(
+        #     (df_pair_corrected_pvalues[pair] < thresh) & (df_k_real.is_sig)
+        # )[0]
+        sig_syllable_indices = np.where((df_pair_corrected_pvalues[pair] < thresh) 
+                                        & (df_k_real.is_sig))[0]
+        intersect_sig_syllables[pair] = df_only_stats.columns[sig_syllable_indices].tolist()
 
     return df_k_real, dunn_results_df, intersect_sig_syllables
 
