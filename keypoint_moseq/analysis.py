@@ -1954,6 +1954,7 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
     group1 = selected_groups[0]
     group2 = selected_groups[1]
     tp_diff = group_tps[0] - group_tps[1]
+    tp_diff = np.round(tp_diff, decimals=5)  # Rounding to a specific decimal places
 
     def permutation_test_func(x, y):
         return np.mean(x) - np.mean(y)
@@ -1971,7 +1972,7 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
         significance = int(significant_mask[i, j])
         result_data.append([syll_include[i], syll_include[j], tp_diff[i, j], p_values[i, j], significance])
 
-    result_df = pd.DataFrame(result_data, columns=["From", "To", "TP_Diff", "P_Value", "Significance"])
+    transition_results_df = pd.DataFrame(result_data, columns=["From", "To", "TP_Diff", "P_Value", "Significance"])
 
     significant_transitions = np.argwhere(significant_mask)
     print(f"Significant transitions between {group1} and {group2} (without correction):")
@@ -1980,8 +1981,8 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
     # save results
     result_dir = os.path.join(project_dir, model_name)
 
-    result_df.to_csv(os.path.join(result_dir, f"Transition_results_{selected_groups[0]}_vs_{selected_groups[1]}.csv"), index=False)
-    return result_df
+    transition_results_df.to_csv(os.path.join(result_dir, f"transition_{selected_groups[0]}_vs_{selected_groups[1]}.csv"), index=False)
+    return transition_results_df
 
 
 def plot_significant_transition_graph(project_dir, model_name, group1, group2, results_df, syll_include, usages, layout='circular', node_scaling=2000, show_syllable_names=False):
