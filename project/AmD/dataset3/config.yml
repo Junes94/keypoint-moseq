@@ -16,7 +16,6 @@ bodyparts:
 
 # determines the subset of bodyparts to use for modeling and the order in which they are represented
 use_bodyparts:
-- nose
 - neck
 - anus
 - chest
@@ -41,12 +40,12 @@ skeleton:
   - chest
 - - rfoot
   - anus
-# - - anus
-#   - tip
+- - anus
+  - tip
 
 # used to initialize heading
 anterior_bodyparts:
-- nose
+- neck
 
 # used to initialize heading
 posterior_bodyparts:
@@ -83,7 +82,7 @@ obs_hypparams:
 ar_hypparams:
   K_0_scale: 10.0
   S_0_scale: 0.01
-  latent_dim: 9
+  latent_dim: 10
   nlags: 3
 
 # transition hyperparameters
