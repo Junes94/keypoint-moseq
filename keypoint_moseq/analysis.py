@@ -1975,14 +1975,14 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
     for i, j in np.ndindex(tp_diff.shape):
         group1_values = [individual_tps[k][i, j] for k, g in enumerate(label_group) if g == group1]
         group2_values = [individual_tps[k][i, j] for k, g in enumerate(label_group) if g == group2]
-        res = permutation_test((group1_values, group2_values), permutation_test_func, n_resamples=n_resamples, alternative='two-sided')
+        res = permutation_test((group1_values, group2_values), permutation_test_func, n_resamples=n_resamples, alternative='two-sided', random_state=42)
         p_values[i, j] = res.pvalue
 
     # Multiple testing correction
-    p_values_corrected = multipletests(p_values.ravel(), alpha=threshold, method=correction_method, is_sorted=False, returnsorted=False)[1].reshape(p_values.shape)
+    p_values_corrected = multipletests(p_values.ravel(), alpha=threshold_fdr, method=correction_method, is_sorted=False, returnsorted=False)[1].reshape(p_values.shape)
 
     significant_mask = p_values < threshold
-    significant_mask_corrected = p_values_corrected < threshold
+    significant_mask_corrected = p_values_corrected < threshold_fdr
 
     result_data = []
     for i, j in np.ndindex(tp_diff.shape):
@@ -2007,7 +2007,7 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
     return transition_results_df
 
 
-def plot_significant_transition_graph(project_dir, model_name, group1, group2, results_df, syll_include, usages, layout='circular', node_scaling=2000, show_syllable_names=False):
+def plot_significant_transition_graph(project_dir, model_name, group1, group2, results_df, syll_include, usages, layout='circular', node_scaling=2000, show_syllable_names=False, legend=True):
     """
     Plot the transition graph for syllables with significant differences between two groups.
 
@@ -2074,7 +2074,8 @@ def plot_significant_transition_graph(project_dir, model_name, group1, group2, r
     blue_patch = plt.Line2D([], [], color='blue', label=f'Up-regulated in {group2}')
     lightcoral_patch = plt.Line2D([], [], marker='o', color='white', label=f'Up-regulated usage in {group1}', markerfacecolor='lightcoral', markersize=10)
     lightblue_patch = plt.Line2D([], [], marker='o', color='white', label=f'Up-regulated usage in {group2}', markerfacecolor='lightblue', markersize=10)
-    plt.legend(handles=[red_patch, blue_patch, lightcoral_patch, lightblue_patch], loc='best')
+    if legend:
+        plt.legend(handles=[red_patch, blue_patch, lightcoral_patch, lightblue_patch], loc='best')
     
     # Save the graph
     save_dir = os.path.join(project_dir, model_name,'figures')
