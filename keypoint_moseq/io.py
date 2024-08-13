@@ -1383,3 +1383,17 @@ def _loadtree_hdf5(leaf):
             return tuple(values)
         else:
             raise ValueError(f"Unrecognized type {leaf_type}")
+
+
+import csv
+
+def extract_matching_results(csv_file, results_dict):
+    # CSV 파일에서 name 컬럼의 값들을 읽어옵니다
+    with open(csv_file, 'r', encoding='utf-8') as file:
+        reader = csv.DictReader(file)
+        names_in_csv = set(row['name'] for row in reader)
+    
+    # results_dict에서 CSV의 name과 일치하는 키-값 쌍만 추출합니다
+    new_dict = {key: value for key, value in results_dict.items() if key in names_in_csv}
+    
+    return new_dict
