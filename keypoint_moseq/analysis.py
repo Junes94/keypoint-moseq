@@ -164,7 +164,7 @@ def interactive_group_setting(project_dir, model_name, index_filename="index.csv
     return pn.Row(summary_table, pn.Column(button))
 
 
-def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, index_filename="index.csv"):
+def compute_moseq_df(project_dir, model_name, *, results_dict=None, fps=30, smooth_heading=True, index_filename="index.csv"):
     """Compute moseq dataframe from results dict that contains all kinematic
     values by frame.
 
@@ -188,7 +188,8 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, in
     """
 
     # load model results
-    results_dict = load_results(project_dir, model_name)
+    if results_dict is None:
+        results_dict = load_results(project_dir, model_name)
 
     # load index file
     index_filepath = os.path.join(project_dir, index_filename)
@@ -273,7 +274,7 @@ def compute_moseq_df(project_dir, model_name, *, fps=30, smooth_heading=True, in
     moseq_df["frame_index"] = np.concatenate(frame_index)
     moseq_df["group"] = np.concatenate(s_group)
 
-    # compute syllable onset
+    # compute syllable onset (Needs to be fixed - If video1 ends with syll 3 and video2 stats with syll 3, then video2 onset would be False)
     change = np.diff(moseq_df["syllable"]) != 0
     indices = np.where(change)[0]
     indices += 1
@@ -289,10 +290,12 @@ def compute_stats_df(
     project_dir,
     model_name,
     moseq_df,
+    results_dict=None,
     min_frequency=0.005,
     groupby=["group", "name"],
     fps=30,
-    index_filename="index.csv"
+    index_filename="index.csv",
+    features_col=["heading", "angular_velocity", "velocity_px_s"]
 ):
     """Summary statistics for syllable frequencies and kinematic values.
 
@@ -315,7 +318,8 @@ def compute_stats_df(
     # compute runlength encoding for syllables
 
     # load model results
-    results_dict = load_results(project_dir, model_name)
+    if results_dict is None:
+        results_dict = load_results(project_dir, model_name)
     syllables = {k: res["syllable"] for k, res in results_dict.items()}
     # frequencies is array of frequencies for sorted syllables [syll_0, syll_1...]
     frequencies = get_frequencies(syllables)
@@ -353,9 +357,7 @@ def compute_stats_df(
     filtered_df = moseq_df[moseq_df["syllable"].isin(syll_include)].copy()
 
     # TODO: hard-coded heading for now, could add other scalars
-    features = filtered_df.groupby(groupby + ["syllable"])[
-        ["heading", "angular_velocity", "velocity_px_s"]
-    ].agg(["mean", "std", "min", "max"])
+    features = filtered_df.groupby(groupby + ["syllable"])[features_col].agg(["mean", "std", "min", "max"])
 
     features.columns = ["_".join(col).strip() for col in features.columns.values]
     features.reset_index(inplace=True)
@@ -1084,6 +1086,7 @@ def plot_syll_stats_with_sem(
     join=False,
     figsize=(8, 4),
     SUBTLE=False,
+    mc_method="fdr_bh"
 ):
     """Plot syllable statistics with standard error of the mean.
 
@@ -1134,7 +1137,7 @@ def plot_syll_stats_with_sem(
 
     if plot_sig and len(stats_df["group"].unique()) > 1:
         # run kruskal wallis and dunn's test
-        _, _, sig_pairs = run_kruskal(stats_df, statistic=stat, thresh=thresh)
+        _, _, sig_pairs = run_kruskal(stats_df, statistic=stat, thresh=thresh, mc_method=mc_method)
         # plot significant syllables for control and experimental group when user specify something
         if ctrl_group in groups and exp_group in groups:
             # check if the group pair is in the sig pairs dict
@@ -1213,7 +1216,11 @@ def plot_syll_stats_with_sem(
             # y축 범위 확인
             y_min, _ = ax.get_ylim()
             # marker의 y 좌표를 y_min에 가까운 값으로 설정 (예: y_min - (y_max - y_min) * 0.05)
-            marker_y = y_min - 0.05
+            if stat == 'frequency':
+                y_min = 0
+                marker_y = y_min
+            else:
+                marker_y = y_min - 0.05
             for s in sig_sylls:
                 if s in ordering:
                     markings.append(np.where(ordering == s)[0])
@@ -1892,7 +1899,7 @@ def get_individual_trans_mats(project_dir, model_name, index_data, selected_grou
     return individual_tps, label_group, recordings, syll_include
 
 
-def get_group_trans_mats_from_individual(project_dir, model_name, index_data, selected_groups=None, normalize='bigram', min_frequency=0.005, normalize_individual_tp='bigram'):
+def get_group_trans_mats_from_individual(project_dir, model_name, index_data, results_dict=None, selected_groups=None, normalize='bigram', min_frequency=0.005, normalize_individual_tp='bigram'):
     """
     Get group transition matrices by averaging individual transition matrices.
 
@@ -1912,12 +1919,15 @@ def get_group_trans_mats_from_individual(project_dir, model_name, index_data, se
     - recordings (list): List of recording names.
     - syll_include (np.ndarray): Array of selected syllable indices.
     """
-
-    results_dict = load_results(project_dir, model_name)
+    if results_dict is None:
+        results_dict = load_results(project_dir, model_name)
+    else:
+        results_dict = results_dict
 
     if selected_groups is None:
         selected_groups = sorted(list(set(index_data['group'])))
-    individual_tps, label_group, recordings, syll_include = get_individual_trans_mats(project_dir, model_name, index_data, selected_groups=selected_groups, normalize=normalize_individual_tp, min_frequency=min_frequency)
+    individual_tps, label_group, recordings, syll_include = get_individual_trans_mats(project_dir, model_name, index_data, selected_groups=selected_groups, 
+                                                                                      normalize=normalize_individual_tp, min_frequency=min_frequency)
     
     group_tps = []
     usages = []
@@ -1935,7 +1945,8 @@ def get_group_trans_mats_from_individual(project_dir, model_name, index_data, se
     return group_tps, usages, individual_tps, label_group, recordings, syll_include, selected_groups
 
 
-def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps, label_group, syll_include, selected_groups, n_resamples=2000, threshold=0.05):
+def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps, label_group, syll_include, selected_groups, 
+                              n_resamples=2000, threshold=0.05, threshold_fdr=0.05, correction_method='fdr_bh'):
     """
     Run permutation test to compare transition probabilities between two groups.
 
@@ -1947,6 +1958,7 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
     - select_groups (list): Name of the first group.
     - n_resamples (int, optional): Number of resamples for the permutation test. Default is 2000.
     - threshold (float, optional): Significance threshold for the permutation test. Default is 0.05.
+    - correction_method (str, optional): Multiple testing correction method. Default is 'fdr_bh'.
 
     Returns:
     - result_df (pd.DataFrame): DataFrame containing the permutation test results.
@@ -1966,17 +1978,27 @@ def run_permutation_group_tps(project_dir, model_name, group_tps, individual_tps
         res = permutation_test((group1_values, group2_values), permutation_test_func, n_resamples=n_resamples, alternative='two-sided')
         p_values[i, j] = res.pvalue
 
+    # Multiple testing correction
+    p_values_corrected = multipletests(p_values.ravel(), alpha=threshold, method=correction_method, is_sorted=False, returnsorted=False)[1].reshape(p_values.shape)
+
     significant_mask = p_values < threshold
+    significant_mask_corrected = p_values_corrected < threshold
+
     result_data = []
     for i, j in np.ndindex(tp_diff.shape):
         significance = int(significant_mask[i, j])
-        result_data.append([syll_include[i], syll_include[j], tp_diff[i, j], p_values[i, j], significance])
+        significance_corrected = int(significant_mask_corrected[i, j])
+        result_data.append([syll_include[i], syll_include[j], tp_diff[i, j], p_values[i, j], significance, p_values_corrected[i, j], significance_corrected])
 
-    transition_results_df = pd.DataFrame(result_data, columns=["From", "To", "TP_Diff", "P_Value", "Significance"])
+    transition_results_df = pd.DataFrame(result_data, columns=["From", "To", "TP_Diff", "P_Value", "Significance", "P_Value_Corrected", "Significance_Corrected"])
 
     significant_transitions = np.argwhere(significant_mask)
+    significant_transitions_corrected = np.argwhere(significant_mask_corrected)
+
     print(f"Significant transitions between {group1} and {group2} (without correction):")
     print("\n".join([f"Syllable {syll_include[i]} -> Syllable {syll_include[j]}" for i, j in significant_transitions]))
+    print(f"\nSignificant transitions between {group1} and {group2} (with correction):")
+    print("\n".join([f"Syllable {syll_include[i]} -> Syllable {syll_include[j]}" for i, j in significant_transitions_corrected]))
 
     # save results
     result_dir = os.path.join(project_dir, model_name)
@@ -2058,4 +2080,5 @@ def plot_significant_transition_graph(project_dir, model_name, group1, group2, r
     save_dir = os.path.join(project_dir, model_name,'figures')
     os.makedirs(save_dir, exist_ok=True)
     plt.savefig(os.path.join(save_dir, f"significant_transition_graph_{group1}_vs_{group2}.png"), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(save_dir, f"significant_transition_graph_{group1}_vs_{group2}.pdf"), dpi=300, bbox_inches='tight')
     plt.show()
