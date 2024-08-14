@@ -2083,3 +2083,132 @@ def plot_significant_transition_graph(project_dir, model_name, group1, group2, r
     plt.savefig(os.path.join(save_dir, f"significant_transition_graph_{group1}_vs_{group2}.png"), dpi=300, bbox_inches='tight')
     plt.savefig(os.path.join(save_dir, f"significant_transition_graph_{group1}_vs_{group2}.pdf"), dpi=300, bbox_inches='tight')
     plt.show()
+
+
+def individual_transitions_based_root_syll(project_dir, model_name, root_syllable, individual_tps, label_group, recordings, syll_include):
+    """
+    Save individual mouse transitions for the given root syllable. 
+    
+    Args:
+    root_syllable (int): The root syllable (i.e. 3).
+    individual_tps (list): List of individual transition probability matrices.
+    label_group (list): List of group labels for each recording.
+    recordings (list): List of recording names.
+    syll_include (np.array): Array of syllable indices.
+    project_dir (str): Project directory path.
+    model_name (str): Name of the model.
+
+    Returns:
+    individual_tps_root (pd.DataFrame): Dataframe of individual transitions.
+    """
+    root_index = np.where(syll_include == root_syllable)[0][0]
+    
+    data = []
+    for i, tp in enumerate(individual_tps):
+        incoming = tp[:, root_index]
+        outgoing = tp[root_index, :]
+        
+        # Normalize incoming and outgoing probabilities
+        incoming_sum = np.sum(incoming)
+        outgoing_sum = np.sum(outgoing)
+        if incoming_sum > 0:
+            incoming = incoming / incoming_sum
+        if outgoing_sum > 0:   
+            outgoing = outgoing / outgoing_sum
+        
+        row = {'name': recordings[i], 'group': label_group[i]}
+        for j, syll in enumerate(syll_include):
+            if j != root_index:
+                row[f'incoming_{syll}'] = incoming[j]
+                row[f'outgoing_{syll}'] = outgoing[j]
+        
+        data.append(row)
+    
+    individual_tps_root = pd.DataFrame(data)
+    
+    # Save the dataframe
+    save_dir = os.path.join(project_dir, model_name, "individual_transitions")
+    os.makedirs(save_dir, exist_ok=True)
+    individual_tps_root.to_csv(os.path.join(save_dir, f"individual_transitions_syllable_{root_syllable}.csv"), index=False)
+
+    return individual_tps_root
+
+
+def run_permutation_group_tps_root_syll(project_dir, model_name, individual_tps_root, root_syll, selected_groups, n_resamples=2000, threshold=0.05, threshold_fdr=0.05, correction_method='fdr_bh'):
+    """
+    Run permutation test to compare transition probabilities between two groups.
+    
+    Args:
+    project_dir (str): Project directory path.
+    model_name (str): Name of the model.
+    individual_tps_root (pd.DataFrame): Dataframe of individual transitions from individual_transitions_based_root_syll.
+    selected_groups (list): List of two group names to compare.
+    n_resamples (int): Number of resamples for permutation test.
+    threshold (float): Significance threshold for individual tests.
+    threshold_fdr (float): Significance threshold for FDR correction.
+    correction_method (str): Method for multiple comparison correction.
+
+    Returns:
+    transition_results_df_root_syll (pd.DataFrame): DataFrame containing the permutation test results.
+    """
+    group1, group2 = selected_groups
+    
+    # Separate data for each group
+    group1_data = individual_tps_root[individual_tps_root['group'] == group1]
+    group2_data = individual_tps_root[individual_tps_root['group'] == group2]
+    
+    # Get transition columns (exclude 'name' and 'group')
+    transition_cols = [col for col in individual_tps_root.columns if col not in ['name', 'group']]
+    
+    def permutation_test_func(x, y):
+        return np.mean(x) - np.mean(y)
+    
+    p_values = []
+    TP_diff = []
+    # effect_sizes = []
+    
+    for col in transition_cols:
+        group1_values = group1_data[col].values
+        group2_values = group2_data[col].values
+        
+        res = permutation_test((group1_values, group2_values), permutation_test_func, 
+                               n_resamples=n_resamples, alternative='two-sided', random_state=42)
+        
+        p_values.append(res.pvalue)
+        TP_diff.append(np.mean(group1_values) - np.mean(group2_values))
+        # # Calculate effect size (Cohen's d)
+        # pooled_std = np.sqrt((np.std(group1_values, ddof=1) ** 2 + np.std(group2_values, ddof=1) ** 2) / 2)
+        # effect_size = (np.mean(group1_values) - np.mean(group2_values)) / pooled_std
+        # effect_sizes.append(effect_size)
+    
+    # Perform multiple testing correction
+    p_values_corrected = multipletests(p_values, alpha=threshold_fdr, method=correction_method, 
+                                       is_sorted=False, returnsorted=False)[1]
+    
+    # Prepare results
+    result_data = []
+    for i, col in enumerate(transition_cols):
+        transition_type, syllable = col.split('_')
+        result_data.append({
+            'Transition': f"{transition_type.capitalize()} {syllable}",
+            'P_Value': p_values[i],
+            'P_Value_Corrected': p_values_corrected[i],
+            f'TP_diff_{group1}-{group2}': TP_diff[i],
+            # 'Effect_Size': effect_sizes[i],
+            'Significant': p_values[i] < threshold,
+            'Significant_Corrected': p_values_corrected[i] < threshold_fdr
+        })
+    
+    transition_results_df_root_syll = pd.DataFrame(result_data)
+    
+    # Print significant results
+    print(f"Significant transitions between {group1} and {group2} (without correction):")
+    print(transition_results_df_root_syll[transition_results_df_root_syll['Significant']]['Transition'].tolist())
+    print(f"\nSignificant transitions between {group1} and {group2} (with correction):")
+    print(transition_results_df_root_syll[transition_results_df_root_syll['Significant_Corrected']]['Transition'].tolist())
+    
+    # Save results
+    result_dir = os.path.join(project_dir, model_name)
+    transition_results_df_root_syll.to_csv(os.path.join(result_dir, f"transition_root_syll{root_syll}_{group1}_vs_{group2}.csv"), index=False)
+    
+    return transition_results_df_root_syll
