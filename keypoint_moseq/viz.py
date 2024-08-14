@@ -22,6 +22,7 @@ from jax_moseq.utils import get_durations, get_frequencies
 
 from plotly.subplots import make_subplots
 import plotly.io as pio
+import plotly.graph_objects as go
 
 pio.renderers.default = "iframe"
 
@@ -2916,3 +2917,107 @@ def plot_eml_scores(eml_scores, eml_std_errs, model_names):
     ax.set_ylabel("EML score")
     plt.tight_layout()
     return fig, ax
+
+
+def create_sankey_diagram_from_TP(root_syllable, transition_matrix, syll_include, project_dir, model_name, group_name, transition_results_df):
+    """
+    (폐기: 전체 syllable에 대해 bigram norm.한 transition matrix를 사용했음. root_syllable를 기준으로 norm.한 transition matrix를 사용해야 함)
+    Create a Sankey diagram for the given root syllable.
+    
+    Args:
+    root_syllable (int): The root syllable (i.e. 3).
+    transition_matrix (np.array): The transition probability matrix.
+    syll_include (np.array): Array of syllable indices.
+    project_dir (str): Project directory path.
+    model_name (str): Name of the model.
+    group_name (str): Name of the group.
+    """
+    root_index = np.where(syll_include == root_syllable)[0][0]
+    
+    incoming = transition_matrix[:, root_index]
+    outgoing = transition_matrix[root_index, :]
+    
+    # Normalize incoming and outgoing probabilities
+    incoming_sum = np.sum(incoming)
+    outgoing_sum = np.sum(outgoing)
+    
+    if incoming_sum > 0:
+        incoming = incoming / incoming_sum
+    if outgoing_sum > 0:
+        outgoing = outgoing / outgoing_sum
+
+    source = []
+    target = []
+    value = []
+    color = []
+    color_node = (len(syll_include) + 1 + len(syll_include))* ['rgba(0, 0, 0, 0.5)']  # Basic node color (transparent black)
+
+    # Incoming transitions
+    for i, prob in enumerate(incoming):
+        if i != root_index:
+            source.append(i)
+            target.append(len(syll_include))
+            if prob > 0:
+                value.append(prob)
+            else:
+                value.append(0.0001)  # To avoid zero division
+            if transition_results_df.loc[(transition_results_df['From'] == syll_include[i]) & 
+                                         (transition_results_df['To'] == root_syllable), 'Significance'].values[0] == 1: # Significant transition (p < 0.05) from tansition_results_df
+                if transition_results_df.loc[(transition_results_df['From'] == syll_include[i]) & 
+                                         (transition_results_df['To'] == root_syllable), 'TP_Diff'].values[0] > 0: # whether the resilient group has higher transition probability
+                    color.append('rgba(62, 140, 87, 0.2)') # transparent green
+                    color_node[i] = 'rgba(62, 140, 87, 0.5)' # Green
+                else:
+                    color.append('rgba(229, 180, 75, 0.2)') # transparent yellow
+                    color_node[i] = 'rgba(229, 180, 75, 0.5)' # Yellow
+            else:
+                color.append('rgba(0, 0, 0, 0.2)')  # Transparent black
+    
+    # Outgoing transitions
+    for i, prob in enumerate(outgoing):
+        if i != root_index:
+            source.append(len(syll_include))
+            target.append((len(syll_include) + 1) + i)
+            if prob > 0:
+                value.append(prob)
+            else:
+                value.append(0.0001)  # To avoid zero divisions
+            if transition_results_df.loc[(transition_results_df['From'] == root_syllable) & 
+                                         (transition_results_df['To'] == syll_include[i]), 'Significance'].values[0] == 1: # Significant transition (p < 0.05) from tansition_results_df
+                if transition_results_df.loc[(transition_results_df['From'] == root_syllable) &
+                                                (transition_results_df['To'] == syll_include[i]), 'TP_Diff'].values[0] > 0:
+                        color.append('rgba(62, 140, 87, 0.2)') # transparent green
+                        color_node[len(syll_include) + 1 + i] = 'rgba(62, 140, 87, 0.5)' # Green
+                else:
+                        color.append('rgba(229, 180, 75, 0.2)') # transparent yellow
+                        color_node[len(syll_include) + 1 + i] = 'rgba(229, 180, 75, 0.5)' # Yellow
+            else:
+                color.append('rgba(0, 0, 0, 0.2)')  # Transparent black
+    
+    label = [f"{s}" for s in syll_include] + [f"{root_syllable}"] + [f"{s}" for s in syll_include]  # Label for each node (incoming + root + outgoing)
+    color_node[len(syll_include)] = 'blue'  # Root node color
+    
+    fig = go.Figure(data=[go.Sankey(
+        node = dict(
+          pad = 5,
+          thickness = 45,
+          line = dict(color = "white", width = 0.5),
+          label = label,
+          color = color_node
+        ),
+        link = dict(
+          source = source,
+          target = target,
+          value = value,
+          color = color,
+          line = dict(color = "white", width = 0.5)
+      ))])
+
+    fig.update_layout(title_text=f"Transition Probabilities for Syllable {root_syllable} ({group_name})", font_size=10)
+
+    # Save the figure
+    save_dir = os.path.join(project_dir, model_name, "sankey_diagrams")
+    os.makedirs(save_dir, exist_ok=True)
+    fig.write_html(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.html"))
+    fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.png"))
+    fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.pdf"))
