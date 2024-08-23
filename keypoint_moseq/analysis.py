@@ -1035,6 +1035,8 @@ def _validate_and_order_syll_stats_params(
 
     if order == "stat":
         ordering, _ = sort_syllables_by_stat(complete_df, stat=stat, SUBTLE=SUBTLE)
+    elif order == "frequency":
+        ordering = sorted(complete_df.syllable.unique())
     elif order == "diff":
         if (
             ctrl_group is None
@@ -1211,6 +1213,13 @@ def plot_syll_stats_with_sem(
                     init_y += -0.05
                 else:
                     print("No significant syllables found.")
+                    y_min = 0
+                    y_max = ax.get_ylim()[1]
+                    current_ticks = ax.get_yticks()
+                    tick_interval = current_ticks[1] - current_ticks[0]
+                    # Find the next tick value above y_max
+                    next_tick = np.ceil(y_max / tick_interval) * tick_interval
+                    ax.set_ylim(y_min, next_tick)
         else:
             markings = []
             # y축 범위 확인
@@ -1220,6 +1229,7 @@ def plot_syll_stats_with_sem(
                 y_min = 0
                 marker_y = y_min
             else:
+                y_min = 0
                 marker_y = y_min - 0.05
             for s in sig_sylls:
                 if s in ordering:
@@ -1230,6 +1240,13 @@ def plot_syll_stats_with_sem(
                 markings = np.concatenate(markings)
                 plt.scatter(markings, [marker_y] * len(markings), color="r", marker="*")
             else:
+                y_max = ax.get_ylim()[1]
+                current_ticks = ax.get_yticks()
+                tick_interval = current_ticks[1] - current_ticks[0]
+                # Find the next tick value above y_max
+                next_tick = np.ceil(y_max / tick_interval) * tick_interval
+                ax.set_ylim(y_min, next_tick)
+
                 print("No significant syllables found.")
 
         # manually define a new patch
