@@ -1132,6 +1132,9 @@ def plot_syll_stats_with_sem(
         the legend object
     """
 
+    def round_to_nearest(x, base):
+        return base * round(x / base)
+    
     # get significant syllables
     sig_sylls = None
     if groups is None:
@@ -1218,7 +1221,7 @@ def plot_syll_stats_with_sem(
                     current_ticks = ax.get_yticks()
                     tick_interval = current_ticks[1] - current_ticks[0]
                     # Find the next tick value above y_max
-                    next_tick = np.ceil(y_max / tick_interval) * tick_interval
+                    next_tick = round_to_nearest(y_max, tick_interval) + tick_interval
                     ax.set_ylim(y_min, next_tick)
         else:
             markings = []
@@ -1242,10 +1245,12 @@ def plot_syll_stats_with_sem(
             else:
                 y_max = ax.get_ylim()[1]
                 current_ticks = ax.get_yticks()
-                tick_interval = current_ticks[1] - current_ticks[0]
+                tick_interval = current_ticks[2] - current_ticks[0]
                 # Find the next tick value above y_max
-                next_tick = np.ceil(y_max / tick_interval) * tick_interval
-                ax.set_ylim(y_min, next_tick)
+                new_y_max = round_to_nearest(y_max, tick_interval) + tick_interval
+                num_ticks = int(round((new_y_max - y_min) / tick_interval)) + 1
+                new_ticks = [y_min + i * tick_interval for i in range(num_ticks)]
+                ax.set_yticks(new_ticks)
 
                 print("No significant syllables found.")
 
