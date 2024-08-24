@@ -2919,7 +2919,7 @@ def plot_eml_scores(eml_scores, eml_std_errs, model_names):
     return fig, ax
 
 
-def create_sankey_diagram_from_TP(root_syllable, transition_matrix, syll_include, project_dir, model_name, group_name, transition_results_df):
+def create_sankey_diagram_from_TP(project_dir, model_name, transition_matrix, root_syllable, syll_include, group_name, transition_results_df):
     """
     (폐기: 전체 syllable에 대해 bigram norm.한 transition matrix를 사용했음. root_syllable를 기준으로 norm.한 transition matrix를 사용해야 함)
     Create a Sankey diagram for the given root syllable.
@@ -3021,3 +3021,191 @@ def create_sankey_diagram_from_TP(root_syllable, transition_matrix, syll_include
     fig.write_html(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.html"))
     fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.png"))
     fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.pdf"))
+
+
+def create_sankey_diagram_from_individual_tps(project_dir, model_name, individual_tps_root, transition_results_df_root_syll, root_syllable, syll_include, group_names):
+    """
+    Create Sankey diagrams for the given root syllable using individual transition probabilities.
+    
+    Args:
+    project_dir (str): Project directory path.
+    model_name (str): Name of the model.
+    individual_tps_root (pd.DataFrame): DataFrame of individual transitions from individual_transitions_based_root_syll.
+    transition_results_df_root_syll (pd.DataFrame): DataFrame containing the permutation test results.
+    root_syllable (int): The root syllable (i.e. 3).
+    syll_include (np.array): Array of syllable indices.
+    group_names (list): List of group names.
+
+    Returns:
+    None (Saves Sankey diagrams as HTML, PNG, and PDF files)
+    """
+    # Data validation
+    expected_transitions = set([f"Incoming {s}" for s in syll_include if s != root_syllable] +
+                               [f"Outgoing {s}" for s in syll_include if s != root_syllable])
+    actual_transitions = set(transition_results_df_root_syll['Transition'])
+    
+    if expected_transitions != actual_transitions:
+        print("Error: Mismatch between expected and actual transitions in transition_results_df_root_syll.")
+        print("This might indicate that the root_syllable does not match the transition data.")
+        print("Expected transitions:", expected_transitions)
+        print("Actual transitions:", actual_transitions)
+        return
+    
+    # check whether the individual_tps_root has columns for 'incoming_{root_syllable}' and 'outgoing_{root_syllable}'
+    if f'incoming_{root_syllable}' in individual_tps_root.columns or f'outgoing_{root_syllable}' in individual_tps_root.columns:
+        print(f"Error: individual_tps_root should not contain columns for 'incoming_{root_syllable}' and 'outgoing_{root_syllable}'.")
+        print("This might indicate that the root_syllable does not match the individual transition data.")
+        print("Run codes from the first cell to generate the correct individual_tps_root.")
+        return
+    
+    syll_include_except_root = syll_include[syll_include != root_syllable] # remove root_syllable from syll_include
+    root_index = np.where(syll_include == root_syllable)[0][0]
+    for group_name in group_names:
+        # Filter data for the current group
+        group_data = individual_tps_root[individual_tps_root['group'] == group_name]
+        
+        # Calculate mean transition probabilities for the group
+        incoming_cols = [col for col in group_data.columns if col.startswith('incoming_')]
+        outgoing_cols = [col for col in group_data.columns if col.startswith('outgoing_')]
+        
+        incoming = group_data[incoming_cols].mean().values
+        outgoing = group_data[outgoing_cols].mean().values
+        
+        source = []
+        target = []
+        value = []
+        color = []
+        color_node = (len(syll_include)-1 + 1 + len(syll_include)-1) * ['rgba(0, 0, 0, 0.5)']  # Basic node color (transparent black)
+        
+        label = [f"{s}" for s in syll_include_except_root] + [f"{root_syllable}"] + [f"{s}" for s in syll_include_except_root]  # Label for each node (incoming + root + outgoing)
+        
+        # Incoming transitions
+        for i, prob in enumerate(incoming):
+            from_syll = syll_include[i] if i < root_index else syll_include[i+1]
+            source.append(i)
+            target.append(len(syll_include)-1)
+            value.append(max(prob, 0.0001))  # To avoid zero division
+            if prob < 0.01:  # find the position of value=0.1 and change the same position of the label into ''
+                label[i] = ''
+            
+            transition = f"Incoming {from_syll}"
+            
+            significance = transition_results_df_root_syll.loc[
+                transition_results_df_root_syll['Transition'] == transition, 
+                'Significant'
+            ].values[0]
+            
+            if significance:
+                tp_diff = transition_results_df_root_syll.loc[
+                    transition_results_df_root_syll['Transition'] == transition, 
+                    f'TP_diff_{group_names[0]}-{group_names[1]}'
+                ].values[0]
+                
+                if tp_diff > 0:
+                    color.append('rgba(62, 140, 87, 0.2)')  # transparent green
+                    color_node[i] = 'rgba(62, 140, 87, 0.5)'  # Green
+                else:
+                    color.append('rgba(229, 180, 75, 0.2)')  # transparent yellow
+                    color_node[i] = 'rgba(229, 180, 75, 0.5)'  # Yellow
+            else:
+                color.append('rgba(0, 0, 0, 0.2)')  # Transparent black
+
+        # Outgoing transitions
+        for i, prob in enumerate(outgoing):
+            to_syll = syll_include[i] if i < root_index else syll_include[i+1]
+            source.append(len(syll_include)-1)
+            target.append(len(syll_include) + i)
+            value.append(max(prob, 0.0001))  # To avoid zero division
+            if prob < 0.01:  # find the position of value=0.1 and change the same position of the label into ''
+                label[len(syll_include) + i] = ''
+            
+            transition = f"Outgoing {to_syll}"
+            
+            significance = transition_results_df_root_syll.loc[
+                transition_results_df_root_syll['Transition'] == transition, 
+                'Significant'
+            ].values[0]
+            
+            if significance:
+                tp_diff = transition_results_df_root_syll.loc[
+                    transition_results_df_root_syll['Transition'] == transition, 
+                    f'TP_diff_{group_names[0]}-{group_names[1]}'
+                ].values[0]
+                
+                if tp_diff > 0:
+                    color.append('rgba(62, 140, 87, 0.2)')  # transparent green
+                    color_node[len(syll_include) + i] = 'rgba(62, 140, 87, 0.5)'  # Green
+                else:
+                    color.append('rgba(229, 180, 75, 0.2)')  # transparent yellow
+                    color_node[len(syll_include) + i] = 'rgba(229, 180, 75, 0.5)'  # Yellow
+            else:
+                color.append('rgba(0, 0, 0, 0.2)')  # Transparent black
+        # Calculate node positions and heights
+        n_nodes = len(syll_include)
+        x_positions = []
+        y_positions = []
+        node_heights = []
+        
+        def calculate_node_positions(values, start_y=0.1, end_y=0.9):
+            n = len(values)
+            if n == 0:
+                return [], []
+            
+            total_value = sum(values) + 1e-10  # Add small value to avoid division by zero
+            min_height = 0.001  # Minimum node height
+            
+            # Calculate node heights
+            heights = [max(v / total_value * (end_y - start_y), min_height) for v in values]
+            
+            # Calculate positions
+            positions = []
+            current_y = start_y
+            for height in heights:
+                positions.append(current_y + height / 2)
+                current_y += height + 0.01  # Add small gap between nodes
+            
+            return positions
+
+        # Left side nodes (incoming)
+        left_y_positions = calculate_node_positions(incoming)
+        x_positions.extend([0.1] * (n_nodes - 1))
+        y_positions.extend(left_y_positions)
+        
+        # Root node
+        x_positions.append(0.5)
+        y_positions.append(0.5)
+        node_heights.append(0.1)  # Fixed height for root node
+        
+        # Right side nodes (outgoing)
+        right_y_positions = calculate_node_positions(outgoing)
+        x_positions.extend([0.9] * (n_nodes - 1))
+        y_positions.extend(right_y_positions)
+            
+        color_node[len(syll_include)-1] = 'blue'  # Root node color
+
+        fig = go.Figure(data=[go.Sankey(
+            node = dict(
+              pad = 10,
+              thickness = 100,
+              line = dict(color = "black", width = 0.5),
+              label = label,
+              color = color_node,
+              x = x_positions,
+              y = y_positions
+            ),
+            link = dict(
+              source = source,
+              target = target,
+              value = value,
+              color = color,
+              line = dict(color = "white", width = 0.5)
+          ))])
+
+        fig.update_layout(title_text=f"Transition Probabilities for Syllable {root_syllable} ({group_name})", font_size=20, height=800, width=800)
+
+        # Save the figure
+        save_dir = os.path.join(project_dir, model_name, "sankey_diagrams")
+        os.makedirs(save_dir, exist_ok=True)
+        fig.write_html(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.html"))
+        fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.png"))
+        fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.pdf"))
