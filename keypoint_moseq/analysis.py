@@ -340,14 +340,17 @@ def compute_stats_df(
     frequency_df = []
     for k, v in results_dict.items():
         syll_freq = get_frequencies(v["syllable"])
+        syll_total_duration = get_frequencies(v["syllable"], runlength=False)
         df = pd.DataFrame(
             {
                 "name": k,
                 "group": index_df[index_df["name"] == k]["group"].values[0],
                 "syllable": np.arange(len(syll_freq)),
                 "frequency": syll_freq,
+                "total_duration": syll_total_duration
             }
         )
+
         frequency_df.append(df)
     frequency_df = pd.concat(frequency_df)
     if "name" not in groupby:
@@ -372,9 +375,12 @@ def compute_stats_df(
     # only keep the columns we need
     durations = durations.fillna(0).reset_index()[groupby + ["syllable", "duration"]]
 
+    # Total duration
+    total_duration = filtered_df.groupby(groupby + ["syllable"])["onset"].count()
+
     stats_df = pd.merge(features, frequency_df, on=groupby + ["syllable"])
     stats_df = pd.merge(stats_df, durations, on=groupby + ["syllable"])
-    return stats_df
+    return stats_df ###total duration 계산해서 추가하기
 
 
 def generate_syll_info(project_dir, model_name, syll_info_path):
