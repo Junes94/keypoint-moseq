@@ -2428,11 +2428,16 @@ def plot_similarity_dendrogram(
     for spine in ax.spines.values():
         spine.set_color("lightgray")
     ax.set_title("Syllable similarity")
-    fig.set_size_inches(figsize)
+    # fig.set_size_inches(figsize)
+    # 하단 여백 조정
+    plt.subplots_adjust(bottom=0.2)
+
+    # tight_layout 적용
+    plt.tight_layout()
 
     print(f"Saving dendrogram plot to {save_path}")
     for ext in ["pdf", "png"]:
-        plt.savefig(save_path + "." + ext)
+        plt.savefig(save_path + "." + ext, bbox_inches='tight')
 
 
 def matplotlib_colormap_to_plotly(cmap):
@@ -3023,7 +3028,7 @@ def create_sankey_diagram_from_TP(project_dir, model_name, transition_matrix, ro
     fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.pdf"))
 
 
-def create_sankey_diagram_from_individual_tps(project_dir, model_name, individual_tps_root, transition_results_df_root_syll, root_syllable, syll_include, group_names):
+def create_sankey_diagram_from_individual_tps(project_dir, model_name, save_folder, individual_tps_root, transition_results_df_root_syll, root_syllable, syll_include, group_names):
     """
     Create Sankey diagrams for the given root syllable using individual transition probabilities.
     
@@ -3204,7 +3209,7 @@ def create_sankey_diagram_from_individual_tps(project_dir, model_name, individua
         fig.update_layout(title_text=f"Transition Probabilities for Syllable {root_syllable} ({group_name})", font_size=20, height=800, width=800)
 
         # Save the figure
-        save_dir = os.path.join(project_dir, model_name, "sankey_diagrams")
+        save_dir = os.path.join(project_dir, model_name, save_folder)
         os.makedirs(save_dir, exist_ok=True)
         fig.write_html(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.html"))
         fig.write_image(os.path.join(save_dir, f"sankey_{group_name}_syllable_{root_syllable}.png"))
